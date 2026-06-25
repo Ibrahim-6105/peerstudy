@@ -1,30 +1,22 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
+// Basic app smoke test for the PeerStudy shell.
+// It verifies startup reaches the public landing screen without Firebase config.
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:peerstudy/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('PeerStudy opens the landing screen', (tester) async {
+    // Build the app exactly like main does, but without starting Firebase.
+    await tester.pumpWidget(const ProviderScope(child: PeerStudyApp()));
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    // Let the splash delay finish so the router can show the landing screen.
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pumpAndSettle();
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('PeerStudy'), findsOneWidget);
+    expect(find.text('Login'), findsOneWidget);
+    expect(find.text('Student Sign Up'), findsOneWidget);
   });
 }
