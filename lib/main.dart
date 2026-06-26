@@ -1,14 +1,16 @@
-// Entry point for the PeerStudy Flutter application.
-// This file initializes Firebase and sets up the root widget.
+// Main entry point for the PeerStudy Flutter app.
+// Start reading here first: it prepares Flutter, tries to initialize Firebase,
+// then opens the root widget that controls theme and navigation.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:peerstudy/routes/app_router.dart';
+import 'package:peerstudy/services/firebase_service.dart';
+import 'package:peerstudy/theme/app_theme.dart';
 
-import 'core/routing/app_router.dart';
-import 'core/services/firebase_service.dart';
-import 'core/theme/app_theme.dart';
-
-// Starts Flutter, prepares Firebase when it is configured, then shows the app.
+// This function runs before any screen appears.
+// Firebase is allowed to fail gracefully here so beginners can run the UI before
+// adding real Firebase project files.
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await FirebaseService.initializeFirebase();
@@ -18,7 +20,9 @@ Future<void> main() async {
 class PeerStudyApp extends StatelessWidget {
   const PeerStudyApp({super.key});
 
-  // Builds the root MaterialApp and connects it to the central router.
+  // The root widget is intentionally small.
+  // It gives the whole app one theme, one route table, and removes the debug
+  // banner so all screens feel like one connected application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(

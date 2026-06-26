@@ -59,7 +59,7 @@ related.
 - Prefer small feature folders with clear ownership.
 - Keep widgets focused and reusable.
 - Keep Firebase and AI code behind repository or service interfaces.
-- Put validation rules in testable domain or core modules.
+- Put validation rules in `utils/` when they are small and shared.
 - Handle loading, empty, error, and success states explicitly.
 - Add tests with every feature that changes user-visible behavior.
 

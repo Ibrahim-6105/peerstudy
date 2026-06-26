@@ -12,7 +12,7 @@ Last updated: 2026-06-25
 
 ## Phase 1 - App Shell
 
-- [ ] Replace the counter app with a PeerStudy app shell.
+- [x] Replace the counter app with a PeerStudy app shell.
 - [ ] Add app theme, routing, and shared layout components.
 - [ ] Update app display names and metadata.
 - [ ] Add product-focused smoke tests.

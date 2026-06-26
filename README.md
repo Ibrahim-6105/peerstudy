@@ -1,54 +1,33 @@
 # PeerStudy
 
-PeerStudy is a Flutter mobile application planned as a LIMU-focused collaborative
-learning platform. The product vision is to help university students move from
-isolated study and scattered messaging groups into structured academic spaces for
-lecture resources, concept discussions, AI-assisted quizzes, and peer explanations.
+PeerStudy is a Flutter app for LIMU students. The goal is to give students one
+organized place to sign in, find academic content, discuss subjects, and later
+use features like AI quizzes, lecture files, peer posts, and moderation tools.
 
-Last audited: 2026-06-25
+This repository is intentionally kept simple for learning. It does not use clean
+architecture folders. The code is grouped by what beginners usually look for:
+screens, components, providers, models, services, routes, theme, and utils.
 
-## Current Status
+## Current App Status
 
-This repository currently contains a fresh Flutter scaffold with the default
-counter app in `lib/main.dart`. The project brief, SRS, and software design
-document have been reviewed from:
+The app currently has:
 
-`C:\Users\betoe\Downloads\PeerStudy_Project_Document.pdf`
+- A splash screen that checks authentication state.
+- Landing, login, signup, and forgot password screens.
+- Student, moderator, and admin dashboard placeholders.
+- Settings, privacy policy, terms, support, and about screens.
+- Riverpod auth state connected to Firebase Auth and Firestore.
+- A Firebase startup helper that lets the app run even before Firebase config is
+  generated.
+- A widget smoke test that confirms the app reaches the landing screen.
 
-The PDF is treated as the product source of truth for the next implementation
-phase. The extracted requirements are documented in `docs/`.
+Firebase login/signup will only work after the real Firebase configuration is
+added with FlutterFire. Until then, the app still opens and shows a friendly
+setup message instead of crashing.
 
-## Product Vision
+## How To Run
 
-PeerStudy is intended to provide:
-
-- Verified student registration using official `@limu.edu.ly` email addresses.
-- Role-based access for students, academic moderators, and admins.
-- Context-based navigation through major, department or academic year, subject,
-  and concept.
-- Lecture material access, primarily PDF notes and slides.
-- AI-generated concept quizzes constrained to official learning material.
-- Concept-level peer discussion and chronological chat history.
-- Peer posts, comments, and short explanation videos.
-- Reporting, moderation, blocking, and content removal tools.
-
-## Tech Stack
-
-- Flutter for cross-platform app development.
-- Dart SDK as provided by the active Flutter channel.
-- Firebase Authentication for identity and session management.
-- Cloud Firestore for academic structures, messages, reports, and metadata.
-- Firebase Cloud Storage for lecture files and peer media.
-- External AI API for quiz generation.
-- Local cache storage planned for performance and selected offline support.
-
-Only Flutter and the default scaffold dependencies are installed in the repo
-today. Firebase, AI, PDF viewing, video, and local cache packages still need to be
-selected during implementation.
-
-## Getting Started
-
-Install Flutter, then run:
+Run these commands from the project root:
 
 ```powershell
 flutter pub get
@@ -57,49 +36,219 @@ flutter test
 flutter run
 ```
 
-The current app runs as the starter counter application.
-
-## Quality Checks
-
-Use these checks before opening a pull request:
+Use these before pushing code:
 
 ```powershell
-dart format --set-exit-if-changed .
+dart format --set-exit-if-changed lib test
 flutter analyze
 flutter test
 ```
 
-The repository also includes a GitHub Actions workflow in
-`.github/workflows/flutter_quality.yml` for formatting, analysis, and tests.
-
-## Documentation Map
-
-- `docs/project-brief.md` summarizes the reviewed project document.
-- `docs/repository-audit.md` explains the current folder state and risks.
-- `docs/architecture.md` describes the target technical architecture.
-- `docs/roadmap.md` breaks the implementation into practical phases.
-- `docs/contributing.md` defines workflow, commit, and review standards.
-
-## Repository Layout
+## Simple Folder Layout
 
 ```text
-lib/                  Flutter application source
-test/                 Flutter widget and unit tests
-android/              Android platform project
-ios/                  iOS platform project
-web/                  Web runner
-windows/              Windows desktop runner
-linux/                Linux desktop runner
-macos/                macOS desktop runner
-docs/                 Project documentation
-.github/workflows/    Continuous integration workflows
+lib/
+  main.dart
+  components/
+  models/
+  providers/
+  routes/
+  screens/
+  services/
+  theme/
+  utils/
+test/
+  widget_test.dart
 ```
 
-## Important Notes
+### `lib/main.dart`
 
-- The current implementation does not yet contain PeerStudy product features.
-- The project document mentions both local SQLite caching and MySQL in different
-  places. The backend persistence strategy should be finalized before feature
-  development begins.
-- The initial scope depends on active internet connectivity and does not include
-  full offline mode or gamification.
+Start here first.
+
+This file is the app entry point. It prepares Flutter, asks
+`FirebaseService` to initialize Firebase, wraps the app in Riverpod's
+`ProviderScope`, and opens `PeerStudyApp`.
+
+`PeerStudyApp` creates the `MaterialApp`, attaches the app theme, and connects
+navigation to `AppRouter`.
+
+### `lib/routes/`
+
+Read this second.
+
+- `app_routes.dart` stores route names like `/login` and `/student-shell`.
+- `app_router.dart` maps each route name to the screen widget Flutter should
+  open.
+
+When you add a new screen, usually you add a route name in `app_routes.dart` and
+then add a case for it in `app_router.dart`.
+
+### `lib/screens/`
+
+Read this third.
+
+Screens are full pages. They are grouped by the part of the app they belong to:
+
+```text
+screens/auth/       Splash, landing, login, signup, forgot password
+screens/student/    Main student tab shell
+screens/admin/      Admin dashboard placeholder
+screens/moderator/  Moderator dashboard placeholder
+screens/profile/    Settings, privacy, terms, support, about
+```
+
+Most beginner work will happen here because screens are where users see and tap
+things.
+
+### `lib/components/`
+
+Reusable UI pieces live here.
+
+- `app_button.dart` is the shared button with loading behavior.
+- `app_form_field.dart` is the shared labeled text field.
+- `loading_view.dart` is the shared loading spinner/message.
+- `error_view.dart` is the shared error state.
+- `empty_state_view.dart` is the shared empty state.
+
+If the same widget is needed in more than one screen, put it in `components/`.
+
+### `lib/providers/`
+
+Riverpod state files live here.
+
+`auth_provider.dart` handles:
+
+- Auth loading state.
+- Current signed-in user profile.
+- Login.
+- Signup.
+- Password reset.
+- Sign out.
+- Loading the Firestore user profile.
+
+Screens call this provider instead of calling Firebase directly. That keeps the
+screens easier to read.
+
+### `lib/models/`
+
+Data objects live here.
+
+`app_user.dart` describes the user profile saved in Firestore. It also has helper
+methods for converting between Firestore documents and Dart objects.
+
+### `lib/services/`
+
+External setup and app services live here.
+
+`firebase_service.dart` initializes Firebase and tracks whether Firebase is ready.
+It is written to be gentle during early development: if Firebase config is
+missing, the UI can still run.
+
+### `lib/theme/`
+
+`app_theme.dart` stores shared colors and Material styling. Change the app's
+main look here instead of editing every screen separately.
+
+### `lib/utils/`
+
+Small helper functions live here.
+
+`validators.dart` currently checks LIMU email addresses, password length, and
+non-empty text.
+
+### `test/widget_test.dart`
+
+This is the first app test. It opens `PeerStudyApp`, waits for the splash screen
+to redirect, and checks that the public landing screen appears.
+
+## Beginner Reading Order
+
+If you are new to this project, read files in this order:
+
+1. `lib/main.dart`
+2. `lib/routes/app_routes.dart`
+3. `lib/routes/app_router.dart`
+4. `lib/screens/auth/splash_screen.dart`
+5. `lib/screens/auth/landing_screen.dart`
+6. `lib/screens/auth/login_screen.dart`
+7. `lib/providers/auth_provider.dart`
+8. `lib/models/app_user.dart`
+9. `lib/services/firebase_service.dart`
+10. `lib/components/app_button.dart`
+11. `lib/components/app_form_field.dart`
+12. `test/widget_test.dart`
+
+That order follows the real app flow: start app, choose route, show splash,
+open public screens, call auth logic, read user data, and test startup.
+
+## How The App Starts
+
+1. `main()` runs.
+2. Flutter bindings are prepared.
+3. Firebase initialization is attempted.
+4. Riverpod `ProviderScope` is added.
+5. `PeerStudyApp` creates the `MaterialApp`.
+6. The initial route `/` opens `SplashScreen`.
+7. `SplashScreen` asks `auth_provider.dart` if a user is available.
+8. The user is redirected to landing, student, moderator, or admin screens.
+
+## How Login Works
+
+1. `LoginScreen` validates email and password.
+2. The screen calls `authNotifierProvider.notifier.signIn(...)`.
+3. `AuthNotifier` asks Firebase Auth to sign in.
+4. If sign-in succeeds, it loads the user's Firestore profile.
+5. The screen checks the user's role.
+6. The app opens the matching dashboard.
+
+## How To Add A New Screen
+
+Example: adding a subjects screen.
+
+1. Create `lib/screens/student/subjects_screen.dart`.
+2. Add a route name in `lib/routes/app_routes.dart`.
+3. Add a matching case in `lib/routes/app_router.dart`.
+4. Navigate with:
+
+```dart
+Navigator.pushNamed(context, AppRoutes.subjects);
+```
+
+## How To Add A New Reusable Widget
+
+If a widget is used in two or more screens, put it in `lib/components/`.
+
+Example names:
+
+- `subject_card.dart`
+- `section_title.dart`
+- `profile_avatar.dart`
+- `quiz_option_tile.dart`
+
+Keep components small and give each one a short comment explaining what it is
+for.
+
+## Firebase Setup Reminder
+
+The app has Firebase packages installed, but real Firebase login needs generated
+configuration files.
+
+Later, after a Firebase project is created, run:
+
+```powershell
+dart pub global activate flutterfire_cli
+flutterfire configure
+```
+
+That usually generates `lib/firebase_options.dart`. After that, update
+`FirebaseService.initializeFirebase()` to pass the generated options if needed.
+
+## Notes For Future Features
+
+- Put new pages in `screens/`.
+- Put repeated UI in `components/`.
+- Put Firebase or external setup code in `services/`.
+- Put Riverpod state in `providers/`.
+- Put simple data classes in `models/`.
+- Keep comments friendly and useful. Explain why the file exists and what the
+  main widget/function does.
