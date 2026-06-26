@@ -89,7 +89,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   // SnackBar when something goes wrong.
   Future<String?> signIn(String email, String password) async {
     if (!FirebaseService.isReady) {
-      return 'Firebase is not configured yet. Run FlutterFire configuration first.';
+      return 'Firebase is not ready for this platform yet. Please check the Firebase setup.';
     }
 
     try {
@@ -115,7 +115,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   // should be created separately by trusted project owners.
   Future<String?> signUp(String fullName, String email, String password) async {
     if (!FirebaseService.isReady) {
-      return 'Firebase is not configured yet. Run FlutterFire configuration first.';
+      return 'Firebase is not ready for this platform yet. Please check the Firebase setup.';
     }
 
     try {
@@ -154,7 +154,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   // whether the request was accepted.
   Future<String?> sendPasswordResetEmail(String email) async {
     if (!FirebaseService.isReady) {
-      return 'Firebase is not configured yet. Run FlutterFire configuration first.';
+      return 'Firebase is not ready for this platform yet. Please check the Firebase setup.';
     }
 
     try {

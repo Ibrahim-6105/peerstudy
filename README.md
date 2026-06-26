@@ -17,13 +17,14 @@ The app currently has:
 - Student, moderator, and admin dashboard placeholders.
 - Settings, privacy policy, terms, support, and about screens.
 - Riverpod auth state connected to Firebase Auth and Firestore.
-- A Firebase startup helper that lets the app run even before Firebase config is
-  generated.
+- Firebase configuration generated for the `peerstudy-22d20` project.
+- Android Firebase Gradle setup with `google-services.json`.
+- A Firebase startup helper that uses `DefaultFirebaseOptions.currentPlatform`.
 - A widget smoke test that confirms the app reaches the landing screen.
 
-Firebase login/signup will only work after the real Firebase configuration is
-added with FlutterFire. Until then, the app still opens and shows a friendly
-setup message instead of crashing.
+Firebase is configured for Android and iOS. Web, Windows, macOS, and Linux are
+not configured yet, so those platforms can still open the UI but Firebase auth
+actions will show a setup message.
 
 ## How To Run
 
@@ -141,8 +142,8 @@ methods for converting between Firestore documents and Dart objects.
 External setup and app services live here.
 
 `firebase_service.dart` initializes Firebase and tracks whether Firebase is ready.
-It is written to be gentle during early development: if Firebase config is
-missing, the UI can still run.
+It uses the generated `lib/firebase_options.dart` file so Android and iOS start
+with the correct Firebase project.
 
 ### `lib/theme/`
 
@@ -228,20 +229,17 @@ Example names:
 Keep components small and give each one a short comment explaining what it is
 for.
 
-## Firebase Setup Reminder
+## Firebase Configuration
 
-The app has Firebase packages installed, but real Firebase login needs generated
-configuration files.
+Firebase has already been configured for this project:
 
-Later, after a Firebase project is created, run:
+- Project ID: `peerstudy-22d20`
+- Android package name: `com.example.peerstudy`
+- Android config file: `android/app/google-services.json`
+- FlutterFire options file: `lib/firebase_options.dart`
 
-```powershell
-dart pub global activate flutterfire_cli
-flutterfire configure
-```
-
-That usually generates `lib/firebase_options.dart`. After that, update
-`FirebaseService.initializeFirebase()` to pass the generated options if needed.
+If another Firebase project is needed later, run `flutterfire configure` again
+and review the generated files before committing them.
 
 ## Notes For Future Features
 

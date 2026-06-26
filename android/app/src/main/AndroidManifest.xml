@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Firebase Auth and Firestore need internet access in release APKs too. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
-        android:label="peerstudy"
+        android:label="PeerStudy"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

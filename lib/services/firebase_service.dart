@@ -1,8 +1,10 @@
 // Firebase startup helper.
-// The app uses Firebase for login and user profiles, but this helper keeps the
-// app runnable even before firebase_options.dart is generated.
+// The app uses Firebase for login and user profiles, so this helper initializes
+// Firebase once using the FlutterFire-generated options in firebase_options.dart.
+// Keeping this in one file makes startup easier to understand and debug.
 
 import 'package:firebase_core/firebase_core.dart';
+import 'package:peerstudy/firebase_options.dart';
 
 class FirebaseService {
   FirebaseService._();
@@ -12,8 +14,9 @@ class FirebaseService {
   static bool get isReady => _isReady;
 
   // Initializes Firebase once and records whether it is ready.
-  // If Firebase config is missing, we do not crash; auth screens will show a
-  // friendly setup message instead.
+  // Android and iOS use DefaultFirebaseOptions.currentPlatform. Unsupported
+  // platforms continue without crashing, so web/desktop development can still
+  // open the UI until those Firebase apps are configured later.
   static Future<void> initializeFirebase() async {
     if (Firebase.apps.isNotEmpty) {
       _isReady = true;
@@ -21,8 +24,12 @@ class FirebaseService {
     }
 
     try {
-      await Firebase.initializeApp();
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
       _isReady = true;
+    } on UnsupportedError {
+      _isReady = false;
     } on FirebaseException catch (error) {
       final isMissingConfig =
           error.code == 'core/not-initialized' ||
