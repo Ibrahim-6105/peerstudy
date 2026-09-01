@@ -15,24 +15,30 @@ class ErrorView extends StatelessWidget {
   // network errors and fixed messages.
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.error_outline, size: 64, color: Colors.red.shade300),
-            const SizedBox(height: 16),
-            Text(
-              message,
-              style: Theme.of(context).textTheme.bodyMedium,
-              textAlign: TextAlign.center,
-            ),
-            if (onRetry != null) ...[
-              const SizedBox(height: 16),
-              ElevatedButton(onPressed: onRetry, child: const Text('Retry')),
+    final colors = Theme.of(context).colorScheme;
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline, size: 38, color: colors.error),
+              const SizedBox(height: 10),
+              Text(
+                message,
+                style: Theme.of(context).textTheme.bodyMedium,
+                textAlign: TextAlign.center,
+              ),
+              if (onRetry != null) ...[
+                const SizedBox(height: 12),
+                FilledButton.tonal(
+                  onPressed: onRetry,
+                  child: const Text('Try again'),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

@@ -1,11 +1,11 @@
 {
-    "name": "peerstudy",
-    "short_name": "peerstudy",
+    "name": "PeerStudy",
+    "short_name": "PeerStudy",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#006B5C",
+    "theme_color": "#006B5C",
+    "description": "Secure subject-based learning and collaboration for LIMU students.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

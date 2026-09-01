@@ -32,6 +32,32 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+/android/build/
+
+# Local release-signing credentials must never enter source control.
+/android/key.properties
+*.jks
+*.keystore
+
+# Local Firebase emulator configuration may contain provider secrets.
+/functions/.env.local
+/functions/.secret.local
+/firebase-debug.log
+/firestore-debug.log
+/ui-debug.log
+
+# A local handoff APK is generated from source and should not enter Git history.
+/PeerStudy-local-emulator-test.apk
+/PeerStudy-phone-USB-test.apk
+/PeerStudy-phone-ARM64-USB-test.apk
+/PeerStudy-phone-test.apk
+
+# Supabase migrations, Edge Functions, seeds, and config are source code.
+# Only machine-specific CLI link/cache state stays outside version control.
+/supabase/.temp/
+/supabase/.branches/
+/supabase/.env
+/supabase/functions/.env
 
 # Symbolication related
 app.*.symbols

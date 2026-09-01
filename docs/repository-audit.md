@@ -1,75 +1,59 @@
-# Repository Audit
+# Repository audit
 
-Last audited: 2026-06-26
+## Final verification record
 
-## Summary
+- Date: 30 August 2026 (Africa/Tripoli)
+- Supabase project: `xihsvhhkbaaypmjjtzxa`
+- Fresh account reset: 1 old Auth account removed
+- Database: corrected core and Community attachment migrations applied successfully
+- Edge Functions: quiz generation/submission and attachment finalization/cleanup active with JWT verification
+- Admin: `admin@limu.edu.ly` is active; alias `admin` / password `123456` verified
+- Formatting: 63 Dart files checked, 0 changes required
+- Flutter analysis: 0 issues
+- Flutter tests: 57 passed, 0 failed
+- Hosted acceptance: 21 passed, 0 failed, 0 blocked
+- APK build: passed
+- APK package: `ly.edu.limu.peerstudy`, version `1.0.0`, minimum Android API 24
+- APK signature: Android v2 signature verified with the local debug test certificate
+- APK path: `build/app/outputs/flutter-apk/PeerStudy-phone-test.apk`
+- APK size: 80,051,225 bytes
+- APK SHA-256: `6AA9695EE4DAFADE28754F810B39D9348BA6F2945CA7ADD075DC2E7316E4DDB0`
 
-The repository now contains a simple Flutter PeerStudy app shell. It is no longer
-organized with `core/` and `features/` clean-architecture folders. The app uses a
-beginner-friendly layout with screens, components, providers, models, services,
-routes, theme, and utils.
+## Corrected scope evidence
 
-## Current Project State
+| Requirement | Evidence |
+| --- | --- |
+| Student and Admin only | Migration checks, route guards, and hosted profiles passed |
+| LIMU Student signup | Hosted valid signup passed; non-LIMU signup was rejected |
+| School -> Area -> Department -> Subject | Hosted Student RLS exposed a complete usable hierarchy while preserving owner additions |
+| One Community per Subject | Hosted Subject and matching Community IDs were equal |
+| Private approved PDFs | Hosted unapproved/approved/removed lifecycle and SHA-256 download passed |
+| Posts and comments | Hosted create, versioned edit, author delete, and count flow passed |
+| Private Community attachments | Real Post PDF and Comment TXT validation/read/removal passed; forged bytes and cross-user actions were denied |
+| Private one-target reports | Two-Student privacy and Admin visibility passed |
+| Admin report action | Hosted atomic dismiss passed; remove/restrict also have SQL checks |
+| Restricted access denial | Existing Student token lost catalog access immediately and recovered after reactivation |
+| Exactly ten AI questions | A real Gemini call from a protected approved PDF returned exactly ten validated questions |
+| Server-side quiz scoring | Real hosted submission returned a trusted score and ten corrections without exposing the key before submission |
 
-- Git branch: `main`.
-- App entry point: `lib/main.dart`.
-- Current UI: PeerStudy splash, landing, auth forms, role dashboards, settings,
-  policy, support, and about screens.
-- Current state management: Riverpod.
-- Current backend packages: Firebase Core, Firebase Auth, and Cloud Firestore.
-- Current test coverage: app startup smoke test in `test/widget_test.dart`.
-- CI: Flutter quality workflow in `.github/workflows/flutter_quality.yml`.
+Full hosted details are recorded in
+[hosted-smoke-summary.md](evidence/hosted-smoke-summary.md). The reusable runner
+is `supabase/scripts/hosted-smoke.ts`; it prints no keys or tokens and cleans
+temporary data in `finally`.
 
-## Current `lib/` Layout
+## Clean hosted test state
 
-```text
-lib/
-  main.dart
-  components/
-  models/
-  providers/
-  routes/
-  screens/
-  services/
-  theme/
-  utils/
-```
+The acceptance runner removed only its uniquely tracked temporary Students,
+profiles, posts, comments, Community attachments, reports, materials, Storage objects, quizzes,
+attempts, and audit rows. Existing owner accounts, catalog entries, and data
+were preserved.
 
-## Folder Notes
+## Remaining external checks
 
-- `screens/`: full app pages. Most new visible features start here.
-- `components/`: reusable widgets such as app buttons, form fields, loading
-  views, empty states, and error states.
-- `providers/`: Riverpod state and actions. Auth currently lives here.
-- `models/`: simple data objects such as `AppUser`.
-- `services/`: setup helpers such as Firebase initialization.
-- `routes/`: route names and route-to-screen mapping.
-- `theme/`: shared colors and Material styling.
-- `utils/`: helper functions such as validators.
+- Install the final APK on a physical Android phone and repeat the Student and
+  Admin flows on normal Wi-Fi or mobile data.
+- Password-recovery delivery depends on a real LIMU mailbox and should be
+  confirmed with the university mail system.
 
-## Verified Commands
-
-These commands should pass before every push:
-
-```powershell
-dart format --set-exit-if-changed lib test
-flutter analyze
-flutter test
-```
-
-## Remaining Gaps
-
-- Firebase configuration has not been generated yet.
-- The student academic path screens are not implemented yet.
-- Lecture PDFs, AI quizzes, chat, peer posts, and reports are still future
-  features.
-- Firebase security rules still need to be designed before real data writes.
-- The current dashboards are placeholders for role-based navigation.
-
-## Recommended Next Steps
-
-1. Add FlutterFire configuration for the Firebase project.
-2. Build the student major, department/year, subject, and concept screens.
-3. Add Firestore collections and security rules.
-4. Replace dashboard placeholders with real feature screens.
-5. Add tests for validators, auth flow, and navigation.
+These are external device/mail checks, not demo replacements. The real hosted
+AI generation and scoring path is configured and verified.

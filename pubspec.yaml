@@ -1,5 +1,5 @@
 name: peerstudy
-description: "A new Flutter project."
+description: "PeerStudy: a secure subject-based learning and collaboration app for LIMU students."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.11.0
+  sdk: ^3.12.0
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -31,10 +31,20 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  flutter_riverpod: ^2.6.1
-  firebase_core: ^4.11.0
-  firebase_auth: ^6.5.3
-  cloud_firestore: ^6.6.0
+  # Supabase owns Authentication and the matching application profile session.
+  supabase_flutter: ^2.16.0
+  # Community and quiz RPC idempotency keys use standard UUID values.
+  uuid: ^4.5.2
+  # Community post and comment forms use the phone's normal file picker.
+  file_picker: ^10.3.0
+  # Approved PDF materials open inside the simple student viewer.
+  pdfrx: ^2.4.7
+  # Private Community attachments open through short-lived signed links.
+  url_launcher: ^6.3.2
+  shared_preferences: ^2.5.5
+  sqflite: ^2.4.3
+  crypto: ^3.0.7
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:
@@ -46,6 +56,43 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  # This development tool generates consistent launcher artwork for each app.
+  flutter_launcher_icons: ^0.14.4
+
+# Keep every platform launcher icon generated from the reviewed PeerStudy mark.
+flutter_launcher_icons:
+  # Android keeps the conventional resource name already used by the manifest.
+  android: "ic_launcher"
+  # iOS receives the complete AppIcon asset catalog required by Xcode.
+  ios: true
+  # The source is opaque, and this guard also strips accidental future alpha.
+  remove_alpha_ios: true
+  # One high-resolution source prevents platform artwork from drifting apart.
+  image_path: "assets/branding/peerstudy_app_icon.png"
+  # Web generation updates favicon and installable-PWA icon sizes together.
+  web:
+    # Enable the package's web icon generator.
+    generate: true
+    # Reuse the same reviewed master artwork.
+    image_path: "assets/branding/peerstudy_app_icon.png"
+    # Match the app's accessible primary brand color.
+    background_color: "#006B5C"
+    # Match browser chrome with the app's primary brand color.
+    theme_color: "#006B5C"
+  # Windows uses one multi-resolution ICO file.
+  windows:
+    # Enable the package's Windows icon generator.
+    generate: true
+    # Reuse the same reviewed master artwork.
+    image_path: "assets/branding/peerstudy_app_icon.png"
+    # Preserve enough source resolution for high-density desktop displays.
+    icon_size: 256
+  # macOS receives its full AppIcon asset catalog.
+  macos:
+    # Enable the package's macOS icon generator.
+    generate: true
+    # Reuse the same reviewed master artwork.
+    image_path: "assets/branding/peerstudy_app_icon.png"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

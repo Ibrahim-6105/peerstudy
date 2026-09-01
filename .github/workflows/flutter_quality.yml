@@ -10,7 +10,7 @@ on:
 
 jobs:
   quality:
-    name: Format, Analyze, and Test
+    name: Format, Analyze, Test, and Build APK
     runs-on: ubuntu-latest
 
     steps:
@@ -20,18 +20,28 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.41.1"
+          flutter-version: "3.44.6"
           channel: stable
           cache: true
 
-      - name: Install dependencies
+      - name: Install Flutter dependencies
         run: flutter pub get
 
-      - name: Check formatting
-        run: dart format --set-exit-if-changed .
+      - name: Check Dart formatting
+        run: dart format --output=none --set-exit-if-changed lib test
 
-      - name: Analyze
+      - name: Analyze Dart code
         run: flutter analyze
 
-      - name: Test
+      - name: Run Flutter tests
         run: flutter test
+
+      - name: Build installable Android APK
+        run: flutter build apk --release --no-pub
+
+      - name: Keep the phone-testing APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PeerStudy-phone-test
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error

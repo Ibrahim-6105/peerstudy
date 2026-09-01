@@ -1,252 +1,144 @@
 # PeerStudy
 
-PeerStudy is a Flutter app for LIMU students. The goal is to give students one
-organized place to sign in, find academic content, discuss subjects, and later
-use features like AI quizzes, lecture files, peer posts, and moderation tools.
+PeerStudy is a Flutter learning application for LIMU’s School of Technology and Engineering. The corrected system has exactly two roles: **Student** and **Admin**.
 
-This repository is intentionally kept simple for learning. It does not use clean
-architecture folders. The code is grouped by what beginners usually look for:
-screens, components, providers, models, services, routes, theme, and utils.
+Students register with a complete `@limu.edu.ly` email, browse the academic hierarchy, open approved PDF materials, generate a ten-question quiz from one selected material, join the matching subject community, share private attachments with posts/comments, and privately report content.
 
-## Current App Status
+Admins use their pre-created account to manage academic areas, departments, subjects, materials, reports, and Student access. Creating a Subject also creates its one Community.
 
-The app currently has:
+## System shape
 
-- A splash screen that checks authentication state.
-- Landing, login, signup, and forgot password screens.
-- Student, moderator, and admin dashboard placeholders.
-- Settings, privacy policy, terms, support, and about screens.
-- Riverpod auth state connected to Firebase Auth and Firestore.
-- Firebase configuration generated for the `peerstudy-22d20` project.
-- Android Firebase Gradle setup with `google-services.json`.
-- A Firebase startup helper that uses `DefaultFirebaseOptions.currentPlatform`.
-- A widget smoke test that confirms the app reaches the landing screen.
+```text
+Flutter phone app
+    |
+    +-- Supabase Auth: Student and Admin sessions
+    +-- PostgreSQL: profiles, catalog, communities, attachments, quizzes, reports
+    +-- Private Storage: approved PDFs and Community attachments
+    +-- Realtime: posts, comments, and attachment metadata
+    +-- Edge Functions: quizzes, attachment validation, and file cleanup
+```
 
-Firebase is configured for Android and iOS. Web, Windows, macOS, and Linux are
-not configured yet, so those platforms can still open the UI but Firebase auth
-actions will show a setup message.
+Supabase is authoritative. The phone stores only device preferences and temporary viewer data. Correct answers and server secrets never belong in the Flutter application.
 
-## How To Run
+## Academic hierarchy
 
-Run these commands from the project root:
+```text
+School of Technology and Engineering
+    +-- Information Technology
+    |   +-- Software Engineering
+    |   +-- Network
+    |   +-- Telecommunications
+    |   +-- Health Informatics
+    |   +-- Artificial Intelligence (AI)
+    +-- Engineering
+        +-- Architectural and Structural Engineering
+        +-- Mechatronics
+        +-- Interior Design
+```
+
+The seed also creates the corrected reference Subject, **Software Engineering Fundamentals**, and its Community. Admins add reviewed Subjects through the app.
+
+## Quick start
+
+Install Flutter, Android Studio or the Android SDK, Java 17, and Node.js. Then run from the repository root:
 
 ```powershell
+flutter doctor
 flutter pub get
 flutter analyze
 flutter test
 flutter run
 ```
 
-Use these before pushing code:
+The checked-in public client configuration currently targets project reference `xihsvhhkbaaypmjjtzxa`. The publishable key is intentionally public. Never place a Supabase service-role key or an AI key in Flutter source, `--dart-define`, an APK, or Git.
+
+Another project can be selected at build time:
 
 ```powershell
-dart format --set-exit-if-changed lib test
-flutter analyze
-flutter test
+flutter run `
+  --dart-define=SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co `
+  --dart-define=SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLIC_PUBLISHABLE_KEY `
+  --dart-define=SUPABASE_AUTH_REDIRECT_URL=io.supabase.peerstudy://login-callback
 ```
 
-## Simple Folder Layout
+## Configure the hosted backend
+
+Authenticate the Supabase CLI, link the project, preview the migration, and apply the migration with its reference seed:
+
+```powershell
+npx.cmd --yes supabase@2.116.0 login
+npx.cmd --yes supabase@2.116.0 link --project-ref xihsvhhkbaaypmjjtzxa
+npx.cmd --yes supabase@2.116.0 db push --linked --include-seed --dry-run
+npx.cmd --yes supabase@2.116.0 db push --linked --include-seed
+```
+
+Quiz generation is a real external service call. Put `AI_API_KEY` and `AI_MODEL` in the ignored file `supabase/functions/.env`, upload them as Supabase secrets, and deploy the protected functions:
+
+```powershell
+npx.cmd --yes supabase@2.116.0 secrets set `
+  --env-file supabase/functions/.env `
+  --project-ref xihsvhhkbaaypmjjtzxa
+npx.cmd --yes supabase@2.116.0 functions deploy generate-quiz submit-quiz finalize-community-attachment cleanup-community-attachments `
+  --project-ref xihsvhhkbaaypmjjtzxa `
+  --use-api
+```
+
+Do not commit `supabase/functions/.env`. Quiz generation must report a configuration error until genuine AI credentials are supplied; it must not return invented fallback questions.
+
+See [the implementation guide](docs/implementation-guide.md) for the complete beginner-friendly setup.
+
+## Admin phone-test account
+
+The hosted classroom-test account is now provisioned:
+
+- Login name: `admin`
+- Password: `123456`
+
+The app maps this one Admin alias to the underlying Supabase Auth identity `admin@limu.edu.ly`. Students must still enter their complete university email.
+
+This password is intentionally simple for the requested phone test. It is not acceptable for a public system. Change the password and remove this published credential before any real deployment. Public Student registration cannot create an Admin.
+
+## Build the APK
+
+No owner keystore is required for a phone test. When `android/key.properties` is absent, the release build uses the local debug signing key while retaining release-mode optimization:
+
+```powershell
+flutter clean
+flutter pub get
+flutter build apk
+```
+
+The APK is written to:
 
 ```text
-lib/
-  main.dart
-  components/
-  models/
-  providers/
-  routes/
-  screens/
-  services/
-  theme/
-  utils/
-test/
-  widget_test.dart
+build/app/outputs/flutter-apk/app-release.apk
 ```
 
-### `lib/main.dart`
+Install it with Android tools or copy it to the phone:
 
-Start here first.
-
-This file is the app entry point. It prepares Flutter, asks
-`FirebaseService` to initialize Firebase, wraps the app in Riverpod's
-`ProviderScope`, and opens `PeerStudyApp`.
-
-`PeerStudyApp` creates the `MaterialApp`, attaches the app theme, and connects
-navigation to `AppRouter`.
-
-### `lib/routes/`
-
-Read this second.
-
-- `app_routes.dart` stores route names like `/login` and `/student-shell`.
-- `app_router.dart` maps each route name to the screen widget Flutter should
-  open.
-
-When you add a new screen, usually you add a route name in `app_routes.dart` and
-then add a case for it in `app_router.dart`.
-
-### `lib/screens/`
-
-Read this third.
-
-Screens are full pages. They are grouped by the part of the app they belong to:
-
-```text
-screens/auth/       Splash, landing, login, signup, forgot password
-screens/student/    Main student tab shell
-screens/admin/      Admin dashboard placeholder
-screens/moderator/  Moderator dashboard placeholder
-screens/profile/    Settings, privacy, terms, support, about
+```powershell
+adb install -r build/app/outputs/flutter-apk/app-release.apk
 ```
 
-Most beginner work will happen here because screens are where users see and tap
-things.
+## Verification status
 
-### `lib/components/`
+The hosted project has a genuine Gemini key and a verified primary/fallback
+model configuration; quiz generation returns real ten-question results and
+never uses demo questions. Current command counts, attachment acceptance
+evidence, APK checksum, and any remaining physical-phone checks are recorded in
+the linked audit files rather than duplicated here.
 
-Reusable UI pieces live here.
+The signed phone-test APK is
+`build/app/outputs/flutter-apk/PeerStudy-phone-test.apk`. See the
+[repository audit](docs/repository-audit.md) and
+[hosted evidence](docs/evidence/hosted-smoke-summary.md) for exact results.
 
-- `app_button.dart` is the shared button with loading behavior.
-- `app_form_field.dart` is the shared labeled text field.
-- `loading_view.dart` is the shared loading spinner/message.
-- `error_view.dart` is the shared error state.
-- `empty_state_view.dart` is the shared empty state.
+## Documentation
 
-If the same widget is needed in more than one screen, put it in `components/`.
-
-### `lib/providers/`
-
-Riverpod state files live here.
-
-`auth_provider.dart` handles:
-
-- Auth loading state.
-- Current signed-in user profile.
-- Login.
-- Signup.
-- Password reset.
-- Sign out.
-- Loading the Firestore user profile.
-
-Screens call this provider instead of calling Firebase directly. That keeps the
-screens easier to read.
-
-### `lib/models/`
-
-Data objects live here.
-
-`app_user.dart` describes the user profile saved in Firestore. It also has helper
-methods for converting between Firestore documents and Dart objects.
-
-### `lib/services/`
-
-External setup and app services live here.
-
-`firebase_service.dart` initializes Firebase and tracks whether Firebase is ready.
-It uses the generated `lib/firebase_options.dart` file so Android and iOS start
-with the correct Firebase project.
-
-### `lib/theme/`
-
-`app_theme.dart` stores shared colors and Material styling. Change the app's
-main look here instead of editing every screen separately.
-
-### `lib/utils/`
-
-Small helper functions live here.
-
-`validators.dart` currently checks LIMU email addresses, password length, and
-non-empty text.
-
-### `test/widget_test.dart`
-
-This is the first app test. It opens `PeerStudyApp`, waits for the splash screen
-to redirect, and checks that the public landing screen appears.
-
-## Beginner Reading Order
-
-If you are new to this project, read files in this order:
-
-1. `lib/main.dart`
-2. `lib/routes/app_routes.dart`
-3. `lib/routes/app_router.dart`
-4. `lib/screens/auth/splash_screen.dart`
-5. `lib/screens/auth/landing_screen.dart`
-6. `lib/screens/auth/login_screen.dart`
-7. `lib/providers/auth_provider.dart`
-8. `lib/models/app_user.dart`
-9. `lib/services/firebase_service.dart`
-10. `lib/components/app_button.dart`
-11. `lib/components/app_form_field.dart`
-12. `test/widget_test.dart`
-
-That order follows the real app flow: start app, choose route, show splash,
-open public screens, call auth logic, read user data, and test startup.
-
-## How The App Starts
-
-1. `main()` runs.
-2. Flutter bindings are prepared.
-3. Firebase initialization is attempted.
-4. Riverpod `ProviderScope` is added.
-5. `PeerStudyApp` creates the `MaterialApp`.
-6. The initial route `/` opens `SplashScreen`.
-7. `SplashScreen` asks `auth_provider.dart` if a user is available.
-8. The user is redirected to landing, student, moderator, or admin screens.
-
-## How Login Works
-
-1. `LoginScreen` validates email and password.
-2. The screen calls `authNotifierProvider.notifier.signIn(...)`.
-3. `AuthNotifier` asks Firebase Auth to sign in.
-4. If sign-in succeeds, it loads the user's Firestore profile.
-5. The screen checks the user's role.
-6. The app opens the matching dashboard.
-
-## How To Add A New Screen
-
-Example: adding a subjects screen.
-
-1. Create `lib/screens/student/subjects_screen.dart`.
-2. Add a route name in `lib/routes/app_routes.dart`.
-3. Add a matching case in `lib/routes/app_router.dart`.
-4. Navigate with:
-
-```dart
-Navigator.pushNamed(context, AppRoutes.subjects);
-```
-
-## How To Add A New Reusable Widget
-
-If a widget is used in two or more screens, put it in `lib/components/`.
-
-Example names:
-
-- `subject_card.dart`
-- `section_title.dart`
-- `profile_avatar.dart`
-- `quiz_option_tile.dart`
-
-Keep components small and give each one a short comment explaining what it is
-for.
-
-## Firebase Configuration
-
-Firebase has already been configured for this project:
-
-- Project ID: `peerstudy-22d20`
-- Android package name: `com.example.peerstudy`
-- Android config file: `android/app/google-services.json`
-- FlutterFire options file: `lib/firebase_options.dart`
-
-If another Firebase project is needed later, run `flutterfire configure` again
-and review the generated files before committing them.
-
-## Notes For Future Features
-
-- Put new pages in `screens/`.
-- Put repeated UI in `components/`.
-- Put Firebase or external setup code in `services/`.
-- Put Riverpod state in `providers/`.
-- Put simple data classes in `models/`.
-- Keep comments friendly and useful. Explain why the file exists and what the
-  main widget/function does.
+- [Project brief](docs/project-brief.md)
+- [Architecture](docs/architecture.md)
+- [Implementation guide](docs/implementation-guide.md)
+- [Supabase backend reference](docs/supabase-implementation.md)
+- [Repository audit](docs/repository-audit.md)
+- [Roadmap and acceptance checklist](docs/roadmap.md)
+- [Contributing](docs/contributing.md)

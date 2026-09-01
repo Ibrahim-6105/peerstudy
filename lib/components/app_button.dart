@@ -24,21 +24,25 @@ class AppButton extends StatelessWidget {
     return ElevatedButton(
       onPressed: isLoading ? null : onPressed,
       style: ElevatedButton.styleFrom(
-        backgroundColor: Theme.of(context).colorScheme.secondary,
-        minimumSize: const Size.fromHeight(52),
+        backgroundColor: Theme.of(context).colorScheme.primary,
+        foregroundColor: Theme.of(context).colorScheme.onPrimary,
+        // Forty-six pixels remains easy to tap without making forms look loud.
+        minimumSize: const Size.fromHeight(46),
       ),
       child: isLoading
-          ? const SizedBox(
-              height: 24,
-              width: 24,
+          ? SizedBox(
+              height: 19,
+              width: 19,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: Colors.white,
+                // Match the correct foreground in both light and dark themes.
+                color: Theme.of(context).colorScheme.onPrimary,
               ),
             )
           : Text(
               label,
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+              // The shared theme supplies the calm 14-pixel button size.
+              style: const TextStyle(fontWeight: FontWeight.w700),
             ),
     );
   }

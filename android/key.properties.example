@@ -1,0 +1,5 @@
+# Copy this file to android/key.properties and keep the real values private.
+storePassword=replace-with-private-store-password
+keyPassword=replace-with-private-key-password
+keyAlias=peerstudy-release
+storeFile=../private/peerstudy-release.jks

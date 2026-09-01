@@ -1,54 +1,78 @@
 // Main student shell screen.
-// For now it holds placeholder tabs, but this is where the student experience
-// will grow: home, chat, AI quizzes, peer posts, and profile.
+// It gives beginners three predictable destinations: Home, Catalog, Profile.
+//
+// Beginner note: a shell holds several tabs inside one page. IndexedStack keeps
+// each tab alive while the bottom navigation changes the visible destination.
 
 import 'package:flutter/material.dart';
+import 'package:peerstudy/screens/profile/student_profile_screen.dart';
+import 'package:peerstudy/screens/student/student_departments_screen.dart';
+import 'package:peerstudy/screens/student/student_home_screen.dart';
 
 class StudentShellScreen extends StatefulWidget {
   const StudentShellScreen({super.key});
 
-  // Creates the state that remembers the selected bottom navigation tab.
-  // A StatefulWidget is enough here because the selected tab is only local UI
-  // state, not shared app data.
   @override
   State<StudentShellScreen> createState() => _StudentShellScreenState();
 }
 
 class _StudentShellScreenState extends State<StudentShellScreen> {
+  // 0 is Home, 1 is the academic catalog, and 2 is Profile.
   int _selectedIndex = 0;
 
-  static const List<Widget> _pages = <Widget>[
-    Center(child: Text('Home screen placeholder')),
-    Center(child: Text('Chat placeholder')),
-    Center(child: Text('AI Quiz placeholder')),
-    Center(child: Text('Peers placeholder')),
-    Center(child: Text('Profile placeholder')),
-  ];
-
-  // Updates the selected tab when the student taps the bottom navigation.
-  // setState tells Flutter to rebuild the body with the page at the new index.
+  // setState rebuilds only the shell selection; the IndexedStack keeps tab state.
   void _onItemTapped(int index) {
     setState(() => _selectedIndex = index);
   }
 
-  // Builds the main student shell with placeholder sections for the MVP.
-  // Later, each placeholder can become its own screen or component without
-  // changing how the bottom navigation works.
   @override
   Widget build(BuildContext context) {
+    // Home and Profile can switch directly to the academic catalog tab.
+    final pages = <Widget>[
+      StudentHomeScreen(onBrowseSubjects: () => _onItemTapped(1)),
+      const StudentDepartmentsScreen(),
+      StudentProfileTab(
+        isActive: _selectedIndex == 2,
+        onBrowseSubjects: () => _onItemTapped(1),
+      ),
+    ];
+
+    // Titles match the same stable destinations already shown to students.
+    const titles = ['Home', 'Academic Catalog', 'Profile'];
+
     return Scaffold(
-      appBar: AppBar(title: const Text('PeerStudy')),
-      body: _pages[_selectedIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: _onItemTapped,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.chat), label: 'Chat'),
-          BottomNavigationBarItem(icon: Icon(Icons.quiz), label: 'Quiz'),
-          BottomNavigationBarItem(icon: Icon(Icons.group), label: 'Peers'),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
-        ],
+      appBar: AppBar(title: Text(titles[_selectedIndex])),
+      // SafeArea keeps every tab clear of cut-outs and system gesture areas.
+      body: SafeArea(
+        top: false,
+        child: IndexedStack(index: _selectedIndex, children: pages),
+      ),
+      bottomNavigationBar: Semantics(
+        container: true,
+        label: 'Student navigation',
+        child: NavigationBar(
+          // A compact bar keeps more room for study content on small phones.
+          height: 64,
+          selectedIndex: _selectedIndex,
+          onDestinationSelected: _onItemTapped,
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.home_outlined),
+              selectedIcon: Icon(Icons.home_rounded),
+              label: 'Home',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.menu_book_outlined),
+              selectedIcon: Icon(Icons.menu_book_rounded),
+              label: 'Catalog',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person_rounded),
+              label: 'Profile',
+            ),
+          ],
+        ),
       ),
     );
   }

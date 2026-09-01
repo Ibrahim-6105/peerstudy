@@ -1,0 +1,90 @@
+# Local Supabase configuration for PeerStudy.
+# Hosted URLs and secrets are supplied outside source control at deployment.
+project_id = "peerstudy"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[studio]
+enabled = true
+port = 54323
+api_url = "http://127.0.0.1"
+
+[storage]
+enabled = true
+file_size_limit = "25MiB"
+
+# PeerStudy stores ordinary private PDFs only. Vector buckets are not used and
+# remain disabled so the free classroom project does not require a paid tier.
+[storage.vector]
+enabled = false
+
+[auth]
+enabled = true
+site_url = "io.supabase.peerstudy://login-callback"
+additional_redirect_urls = [
+  "io.supabase.peerstudy://login-callback",
+  "io.supabase.peerstudy://login-callback/",
+]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+enable_anonymous_sign_ins = false
+minimum_password_length = 6
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+secure_password_change = true
+max_frequency = "1m"
+otp_length = 6
+otp_expiry = 3600
+
+# Preserve Supabase's optional TOTP capability even though this FYP does not
+# force students to enroll a second factor.
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
+[edge_runtime]
+enabled = true
+policy = "per_worker"
+inspector_port = 8083
+
+[functions.generate-quiz]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/generate-quiz/index.ts"
+
+[functions.submit-quiz]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/submit-quiz/index.ts"
+
+# This function verifies ownership, size, Content-Type, real file signatures,
+# and SHA-256 before an uploaded Community attachment becomes readable.
+[functions.finalize-community-attachment]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/finalize-community-attachment/index.ts"
+
+# This function deletes only uploading/removed private bytes after authorization.
+[functions.cleanup-community-attachments]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/cleanup-community-attachments/index.ts"

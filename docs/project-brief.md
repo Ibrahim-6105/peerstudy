@@ -1,137 +1,107 @@
-# PeerStudy Project Brief
+# PeerStudy project brief
 
-Last reviewed: 2026-06-25
+## Purpose
 
-Source document: `C:\Users\betoe\Downloads\PeerStudy_Project_Document.pdf`
+PeerStudy gives LIMU Students one subject-based place to read approved course materials, test their understanding, and discuss the Subject with classmates. It gives Admins a controlled way to maintain that environment.
 
-## Executive Summary
+## Actors
 
-PeerStudy is planned as a mobile learning platform for LIMU students. It is meant
-to combine structured access to study material with peer-to-peer academic
-interaction so students can ask questions, answer each other, share explanations,
-and study inside subject-focused spaces.
+### Student
 
-The project brief positions PeerStudy as a supplement to official university
-systems. It is not intended to replace registrar systems, formal grading, or
-official university announcements.
+A Student can:
 
-## Problem Statement
+- register with a full `@limu.edu.ly` email and password;
+- sign in, recover a password, update a display name, and sign out;
+- browse School, Academic Area, Department, and Subject;
+- view approved PDFs inside the app;
+- select one approved PDF and explicitly start a ten-question quiz;
+- save answers during the attempt, confirm before leaving, submit once, and review score and corrections;
+- create, edit, and remove their own posts and comments, with up to three
+  private validated attachments on each;
+- privately report exactly one post or comment; and
+- use app settings stored only on the device.
 
-Existing university learning systems focus heavily on content delivery and
-automated assessment. Students still need explanation, discussion, and peer
-feedback, especially when they study outside classroom hours. Informal messaging
-groups provide interaction, but they are usually disorganized, difficult to
-moderate, and weak at preserving academic structure.
+### Admin
 
-PeerStudy addresses this gap by organizing collaboration around academic context:
-major, department or year, subject, concept, learning resources, quizzes, and peer
-discussion.
+An Admin can:
 
-## Target Users
+- sign in with a pre-created active account;
+- manage Academic Areas, Departments, and Subjects;
+- create a Subject and its Community in one operation;
+- upload, replace, approve, edit, and remove Subject PDFs;
+- review pending and resolved reports, including ready target attachments;
+- dismiss a report, remove reported content, or restrict the responsible Student; and
+- activate or restrict Student access with an audit record.
 
-- Students: undergraduate LIMU students who consume learning material, ask
-  questions, answer peers, comment, and upload explanations.
-- Academic moderators: trusted users who manage official lecture material and
-  guide academic discussion.
-- Admins: system-level users who review reports, remove violating content, and
-  block users when necessary.
+## Functional rules
 
-## Core User Journey
+1. Public signup always creates an active Student, never an Admin.
+2. Only complete LIMU email addresses are accepted.
+3. A restricted profile cannot use protected data.
+4. Each Subject has one Community.
+5. Students see only active catalog paths and approved materials.
+6. Each generated quiz comes from one selected approved material.
+7. Each quiz has exactly ten questions and four options per question.
+8. Scoring happens on the server; the phone does not receive the answer key before submission.
+9. Community counts and timestamps come from the database.
+10. Reports remain private to the reporting Student and Admins.
+11. Community attachment bytes stay private, have short-lived access, and
+    become readable only after server-side type, size, and checksum validation.
 
-1. A student registers or logs in with a university email address.
-2. The student selects their academic major.
-3. The system routes technical majors through departments and medical or similar
-   majors through academic years.
-4. The student selects a subject, then a concept.
-5. The concept view exposes lecture material, AI quiz practice, and peer
-   community tools.
-6. Students can ask questions, answer peers, comment on posts, and upload short
-   educational explanations.
-7. Admins and moderators maintain safety, academic relevance, and content quality.
+## Reference academic content
 
-## Functional Requirements
+The initial hierarchy is:
 
-### Authentication
+- School of Technology and Engineering
+  - Information Technology
+    - Software Engineering
+    - Network
+    - Telecommunications
+    - Health Informatics
+    - Artificial Intelligence (AI)
+  - Engineering
+    - Architectural and Structural Engineering
+    - Mechatronics
+    - Interior Design
 
-- Register students with full name, university email, and password.
-- Validate `@limu.edu.ly` email addresses.
-- Log in students, admins, and moderators.
-- Restrict student registration to verified university identities.
-- Support email password reset for students.
-- Block disabled accounts from accessing the app.
-- Allow secure sign out.
+The reference Subject is **Software Engineering Fundamentals** under Software Engineering. More reviewed Subjects are Admin-managed data, not hard-coded screens.
 
-### Academic Navigation
+## Quality goals
 
-- Display LIMU majors.
-- Route IT and Engineering majors through departments.
-- Route Medicine, Law, Pharmacy, and Dentistry through academic years.
-- Display only subjects relevant to the selected path.
-- Break each subject into focused concepts.
+- Beginner-readable Flutter source with plain names and explanatory comments.
+- Fail-closed access when configuration or profile data is invalid.
+- Short, helpful errors without leaking sensitive information.
+- Idempotent writes for unstable phone networks.
+- Transactional Admin actions for related records.
+- Responsive phone screens and bounded database queries.
+- A repeatable APK build and a recorded end-to-end phone test.
 
-### Lecture Materials
+## Out of scope
 
-- Display official lecture notes, PDFs, and reference material.
-- Cache selected files when appropriate.
-- Show clear errors for missing or broken files.
-- Allow readable page navigation, scrolling, and zooming in PDF content.
+- Public Admin registration.
+- A third application role.
+- Student-uploaded official learning materials; Community attachments remain
+  peer content and are never presented as Admin-approved course material.
+- A permanent PDF library on the phone.
+- Client-side quiz scoring.
+- Placeholder questions when the external AI service is not configured.
 
-### AI Quizzes
+## Completion definition
 
-- Generate 10-question quizzes for a selected concept.
-- Limit AI context to official study material for the selected concept.
-- Provide immediate score and correction feedback.
-- Handle AI timeout or generation failure gracefully.
-- Record quiz results when required by the product design.
+The project is ready for a supervised production-like test only when all of the following have evidence:
 
-### Peer Community
+- migrations and seed applied to the intended Supabase project;
+- all quiz and attachment Edge Functions deployed with JWT verification;
+- fresh Student registration and sign-in;
+- pre-created Admin sign-in and role routing;
+- material upload, view, quiz generation, submission, and corrections;
+- post/comment attachment upload, retry, open, removal, private report, and
+  each Admin report action;
+- account restriction immediately denying protected access;
+- `flutter analyze` and the full test suite passing; and
+- a successfully installed APK tested on a physical phone.
 
-- Provide a concept-specific discussion area.
-- Store chat messages chronologically.
-- Allow students to upload posts and peer explanations.
-- Allow comments on peer posts.
-- Validate empty comments and failed uploads.
-- Keep history available for later review.
-
-### Moderation and Administration
-
-- Let students report inappropriate, misleading, or violating content.
-- Let admins review reports and report details.
-- Allow admins to remove content, dismiss reports, and update report status.
-- Allow admins to review chat history where required for safety.
-- Allow admins to block users who violate the code of conduct.
-- Let moderators upload and maintain official lecture materials.
-
-## Non-Functional Requirements
-
-- Scalability: support at least 1,000 concurrent students.
-- Responsiveness: deliver chat messages within approximately 1 second.
-- Media performance: start video playback within approximately 2 seconds on
-  standard mobile networks.
-- Availability: target high availability through Firebase-managed services.
-- Security: use HTTPS, role-based access, and database rules that protect user
-  data and ownership.
-- Reliability: avoid saving corrupted or partial media uploads.
-- Maintainability: separate user interface, business logic, data access, and
-  service integrations.
-
-## Constraints and Limitations
-
-- Initial usage is scoped to LIMU University.
-- Stable internet connectivity is required for real-time features.
-- Full offline access is outside the first release scope.
-- Gamification is deferred to a future version.
-- Content accuracy depends on moderation and verified official material.
-- The source document mentions both local SQLite caching and MySQL. This should
-  be clarified before backend implementation.
-
-## Recommended Initial MVP
-
-1. Student authentication with university email validation.
-2. Academic navigation from major to concept.
-3. Static lecture PDF listing and viewer.
-4. Concept-level discussion posts and comments.
-5. Basic report workflow for admin review.
-6. AI quiz prototype constrained to uploaded concept material.
-
-The current repository has not implemented these features yet.
+The Supabase backend and APK are deployed/built and have recorded automated
+evidence, including one real Gemini-generated ten-question quiz and trusted
+server submission. Final supervised acceptance still includes the physical-phone
+walk-through and university password-recovery e-mail delivery.

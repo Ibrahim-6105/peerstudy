@@ -1,0 +1,5 @@
+{
+  "SUPABASE_URL": "https://YOUR_PROJECT_REF.supabase.co",
+  "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_REPLACE_WITH_PUBLIC_KEY",
+  "SUPABASE_AUTH_REDIRECT_URL": "io.supabase.peerstudy://login-callback"
+}

@@ -1,5 +1,5 @@
 // Reusable loading component.
-// Use this when a page is waiting for startup, network data, or Firebase work so
+// Use this when a page is waiting for startup, network data, or backend work so
 // users see the same calm loading pattern everywhere.
 
 import 'package:flutter/material.dart';
@@ -14,16 +14,23 @@ class LoadingView extends StatelessWidget {
   // small area, while full pages benefit from a short explanation.
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const CircularProgressIndicator(),
-          if (message != null) ...[
-            const SizedBox(height: 16),
-            Text(message!, style: Theme.of(context).textTheme.bodyMedium),
+    // SafeArea also makes this component safe when it is used as a full page.
+    return SafeArea(
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // A compact spinner feels calmer than a large loading illustration.
+            const SizedBox.square(
+              dimension: 26,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
+            if (message != null) ...[
+              const SizedBox(height: 10),
+              Text(message!, style: Theme.of(context).textTheme.bodySmall),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
