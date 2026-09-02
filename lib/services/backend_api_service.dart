@@ -694,9 +694,7 @@ class BackendApiService {
     if (reserved.status != 'uploading') {
       // Expired reservations may still own a private object or quota entry.
       // Cleanup is safe because the server has already made the row unreadable.
-      await _bestEffortCommunityAttachmentCleanup(
-        attachmentId: reserved.id,
-      );
+      await _bestEffortCommunityAttachmentCleanup(attachmentId: reserved.id);
       throw const BackendException(
         'This attachment request was closed. Remove the selection and choose the file again.',
         code: 'attachment-closed',
@@ -815,9 +813,7 @@ class BackendApiService {
         targetId?.trim().isNotEmpty == true &&
         const <String>{'post', 'comment'}.contains(targetType?.trim());
     final selectorCount =
-        (hasAttachment ? 1 : 0) +
-        (hasTarget ? 1 : 0) +
-        (ownRemoved ? 1 : 0);
+        (hasAttachment ? 1 : 0) + (hasTarget ? 1 : 0) + (ownRemoved ? 1 : 0);
     if (selectorCount != 1) {
       throw const BackendException(
         'Choose one attachment cleanup type.',

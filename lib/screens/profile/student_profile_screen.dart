@@ -215,6 +215,7 @@ class StudentProfileTab extends StatefulWidget {
 class _StudentProfileTabState extends State<StudentProfileTab> {
   Future<StudentRecentActivity>? _activityFuture;
   String? _activityUserId;
+  bool _isActivityLoading = false;
   bool _isUpdatingName = false;
   bool _isSigningOut = false;
 
@@ -268,8 +269,7 @@ class _StudentProfileTabState extends State<StudentProfileTab> {
 
     // IndexedStack builds hidden pages; wait until Profile is actually opened.
     if (widget.isActive && user != null && _activityUserId != user.uid) {
-      _activityUserId = user.uid;
-      _activityFuture = _loadActivity(user.uid, settingsState.settings);
+      _beginActivityLoad(user.uid, settingsState.settings, rebuild: false);
     }
 
     return SafeArea(
@@ -298,10 +298,16 @@ class _StudentProfileTabState extends State<StudentProfileTab> {
                 subtitle: 'Your five newest Posts and Quiz Attempts.',
                 action: IconButton(
                   tooltip: 'Refresh recent activity',
-                  onPressed: user == null || !widget.isActive
+                  onPressed:
+                      user == null || !widget.isActive || _isActivityLoading
                       ? null
                       : () => _reloadActivity(user.uid, settingsState.settings),
-                  icon: const Icon(Icons.refresh_rounded),
+                  icon: _isActivityLoading
+                      ? const SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh_rounded),
                 ),
               ),
               const SizedBox(height: 8),
@@ -383,21 +389,63 @@ class _StudentProfileTabState extends State<StudentProfileTab> {
   Future<StudentRecentActivity> _loadActivity(
     String userId,
     AppSettings settings,
-  ) {
+  ) async {
     final loader = widget.activityLoader ?? StudentActivityReader().load;
-    return Future<StudentRecentActivity>.sync(
-      () => loader(
-        userId: userId,
-        areaId: settings.lastAreaId,
-        departmentId: settings.lastDepartmentId,
-        subjectId: settings.lastSubjectId,
-      ),
-    );
+    try {
+      return await Future<StudentRecentActivity>.sync(
+        () => loader(
+          userId: userId,
+          areaId: settings.lastAreaId,
+          departmentId: settings.lastDepartmentId,
+          subjectId: settings.lastSubjectId,
+        ),
+      );
+    } catch (_) {
+      // Keep network, authorization, and malformed-response failures inside the
+      // Profile UI instead of exposing an error Future to Flutter's framework.
+      return _unavailableActivity(
+        'Recent activity could not be loaded. Please try again.',
+      );
+    }
+  }
+
+  // Start one tracked request. Identity checks prevent an older request from
+  // clearing the loading state of a newer account/session request.
+  void _beginActivityLoad(
+    String userId,
+    AppSettings settings, {
+    required bool rebuild,
+  }) {
+    final request = _loadActivity(userId, settings);
+
+    void updateState() {
+      _activityUserId = userId;
+      _isActivityLoading = true;
+      _activityFuture = request;
+    }
+
+    if (rebuild) {
+      setState(updateState);
+    } else {
+      updateState();
+    }
+    unawaited(_finishActivityLoad(request));
+  }
+
+  // Restore the refresh control only for the request currently on screen.
+  Future<void> _finishActivityLoad(
+    Future<StudentRecentActivity> request,
+  ) async {
+    await request;
+    if (!mounted || !identical(_activityFuture, request)) return;
+    setState(() => _isActivityLoading = false);
   }
 
   // A manual refresh replaces the Future so FutureBuilder performs new reads.
+  // The synchronous guard also covers two taps arriving before the next frame.
   void _reloadActivity(String userId, AppSettings settings) {
-    setState(() => _activityFuture = _loadActivity(userId, settings));
+    if (_isActivityLoading) return;
+    _beginActivityLoad(userId, settings, rebuild: true);
   }
 
   // Only full_name can be edited by a Student through the protected RPC.

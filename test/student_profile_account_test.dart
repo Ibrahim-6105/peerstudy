@@ -3,6 +3,8 @@
 // Beginner note: cloud actions are replaced with local callbacks. This proves
 // the visible behavior without needing a real phone session in unit tests.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:peerstudy/models/app_user.dart';
@@ -98,6 +100,96 @@ void main() {
         find.text('Open Profile to load recent activity.'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('refresh shows progress and ignores rapid duplicate taps', (
+      tester,
+    ) async {
+      final refreshResult = Completer<StudentRecentActivity>();
+      var loadCount = 0;
+
+      await _pumpProfile(
+        tester,
+        activityLoader:
+            ({
+              required String userId,
+              required String? areaId,
+              required String? departmentId,
+              required String? subjectId,
+            }) {
+              loadCount += 1;
+              if (loadCount == 1) {
+                return Future<StudentRecentActivity>.value(_recentActivity);
+              }
+              return refreshResult.future;
+            },
+      );
+      await tester.pumpAndSettle();
+
+      final refreshButton = find.byTooltip('Refresh recent activity');
+      await tester.tap(refreshButton);
+      // This second event reaches the pre-rebuild callback, exercising the
+      // synchronous in-flight guard instead of relying only on disabled UI.
+      await tester.tap(refreshButton);
+      await tester.pump();
+
+      expect(loadCount, 2);
+      expect(find.byType(CircularProgressIndicator), findsWidgets);
+
+      refreshResult.complete(_refreshedActivity);
+      await tester.pumpAndSettle();
+
+      expect(loadCount, 2);
+      expect(find.text('Refreshed Community post'), findsOneWidget);
+      expect(find.text('No activity yet.'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+    });
+
+    testWidgets('refresh converts an API failure into a safe retryable state', (
+      tester,
+    ) async {
+      var loadCount = 0;
+
+      await _pumpProfile(
+        tester,
+        activityLoader:
+            ({
+              required String userId,
+              required String? areaId,
+              required String? departmentId,
+              required String? subjectId,
+            }) {
+              loadCount += 1;
+              if (loadCount == 1) {
+                return Future<StudentRecentActivity>.value(_recentActivity);
+              }
+              if (loadCount == 2) {
+                return Future<StudentRecentActivity>.error(
+                  Exception('simulated network failure'),
+                );
+              }
+              return Future<StudentRecentActivity>.value(_refreshedActivity);
+            },
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Refresh recent activity'));
+      await tester.pumpAndSettle();
+
+      expect(loadCount, 2);
+      expect(
+        find.text('Recent activity could not be loaded. Please try again.'),
+        findsNWidgets(2),
+      );
+      expect(tester.takeException(), isNull);
+
+      // A failed request must release the guard so a later retry can recover.
+      await tester.tap(find.byTooltip('Refresh recent activity'));
+      await tester.pumpAndSettle();
+
+      expect(loadCount, 3);
+      expect(find.text('Refreshed Community post'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets(
@@ -267,4 +359,17 @@ final _recentActivity = StudentRecentActivity(
       createdAt: DateTime.utc(2026, 1, 3),
     ),
   ]),
+);
+
+final _refreshedActivity = StudentRecentActivity(
+  posts: StudentActivitySection.available([
+    StudentActivityEntry(
+      title: 'Community post',
+      preview: 'Refreshed Community post',
+      subjectId: 'community-data-structures',
+      createdAt: DateTime.utc(2026, 1, 4),
+    ),
+  ]),
+  // An empty/missing activity section remains a normal non-crashing state.
+  quizzes: const StudentActivitySection.available(<StudentActivityEntry>[]),
 );

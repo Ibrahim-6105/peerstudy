@@ -135,6 +135,8 @@ The signed phone-test APK is
 
 ## Documentation
 
+- [Developer onboarding (PDF)](PeerStudy-Onboarding.pdf)
+- [Developer onboarding source](ONBOARDING.md)
 - [Project brief](docs/project-brief.md)
 - [Architecture](docs/architecture.md)
 - [Implementation guide](docs/implementation-guide.md)

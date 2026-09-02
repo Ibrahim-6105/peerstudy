@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:peerstudy/models/community_attachment.dart';
 import 'package:peerstudy/routes/app_routes.dart';
 import 'package:peerstudy/screens/admin/admin_form_pages.dart';
+import 'package:peerstudy/screens/admin/admin_resolution_note_dialog.dart';
 import 'package:peerstudy/services/auth_service.dart';
 import 'package:peerstudy/services/backend_api_service.dart';
 import 'package:peerstudy/services/supabase_service.dart';
@@ -858,8 +859,12 @@ class _ReportsTabState extends State<_ReportsTab> {
 
   // Explicit progress and failure states prevent sample rows.
   bool _isLoading = true;
+  bool _isResolving = false;
   String? _workingReportId;
   String? _errorMessage;
+
+  // A newer refresh always wins if two report reads overlap.
+  int _loadGeneration = 0;
 
   // Load reports when this tab is first created.
   @override
@@ -879,6 +884,9 @@ class _ReportsTabState extends State<_ReportsTab> {
 
   // Load report rows, then separately load their current target previews.
   Future<void> _loadReports() async {
+    if (!mounted) return;
+    final generation = ++_loadGeneration;
+
     // Keep old rows visible only while a refresh is in progress.
     setState(() {
       _isLoading = true;
@@ -960,7 +968,7 @@ class _ReportsTabState extends State<_ReportsTab> {
       }
 
       // Publish only after both reports and target previews are ready.
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _reports = reports;
         _targets = Map<String, _Row>.unmodifiable(targetMap);
@@ -976,7 +984,7 @@ class _ReportsTabState extends State<_ReportsTab> {
       });
     } on Object catch (error) {
       // Keep the failure retryable and do not invent target content.
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _isLoading = false;
         _errorMessage = _friendlyAdminError(error);
@@ -986,87 +994,97 @@ class _ReportsTabState extends State<_ReportsTab> {
 
   // Ask for a resolution note, then atomically resolve one pending report.
   Future<void> _resolve(_Row report, String action) async {
-    // One report action at a time prevents duplicate decisions.
-    if (_workingReportId != null) return;
-
-    // A meaningful note is required by the backend audit constraint.
-    final note = await _askForResolutionNote(action);
-    if (note == null) return;
-
-    // Mark only this card busy.
-    setState(() {
-      _workingReportId = _id(report);
-      _errorMessage = null;
-    });
+    // Acquire the guard synchronously, before the dialog's first await.  This
+    // prevents rapid taps from pushing two confirmation routes in one frame.
+    if (!mounted || _isResolving) return;
+    _isResolving = true;
 
     try {
+      final reportId = _id(report);
+      if (reportId.isEmpty) {
+        throw StateError(
+          'This report is no longer available. Refresh and try again.',
+        );
+      }
+
+      // A meaningful note is required by the backend audit constraint.
+      final note = await _askForResolutionNote(action);
+      if (note == null || !mounted) return;
+
+      // Mark only this card busy after the Admin confirms the decision.
+      setState(() {
+        _workingReportId = reportId;
+        _errorMessage = null;
+      });
+
       // The RPC combines resolution and optional remove/restrict atomically.
-      await _backend.moderateReport(
-        reportId: _id(report),
+      final result = await _backend.moderateReport(
+        reportId: reportId,
         action: action,
         expectedReportVersion: 1,
-        expectedTargetVersion:
-            (_targets[report['target_id']?.toString()]?['version'] as num?)
-                ?.toInt() ??
-            1,
+        expectedTargetVersion: _adminInt(
+          _targets[report['target_id']?.toString()]?['version'],
+          fallback: 1,
+        ),
         resolutionNote: note,
       );
 
-      // Reload exact status, target state, and history after success.
+      if (!mounted) return;
+
+      // Publish the returned canonical report immediately.  If the following
+      // refresh loses its connection, the completed report does not reappear
+      // as pending and invite a duplicate Admin decision.
+      final resolvedReport = _resolvedReportRow(result, reportId);
+      setState(() {
+        _reports = List<_Row>.unmodifiable(<_Row>[
+          for (final row in _reports)
+            if (_id(row) == reportId)
+              <String, dynamic>{...row, ...resolvedReport}
+            else
+              row,
+        ]);
+
+        // Removed targets have no usable attachment actions while reloading.
+        if (action == 'remove') {
+          final targetId = report['target_id']?.toString() ?? '';
+          if (targetId.isNotEmpty) {
+            _attachmentsByTarget =
+                Map<String, List<CommunityAttachment>>.unmodifiable(
+                  <String, List<CommunityAttachment>>{
+                    for (final entry in _attachmentsByTarget.entries)
+                      if (entry.key != targetId) entry.key: entry.value,
+                  },
+                );
+          }
+        }
+      });
+
+      // Reload exact target state and the rest of moderation history.
       await _loadReports();
       if (!mounted) return;
-      _showMessage('Report action completed.');
+      _showMessage(
+        _errorMessage == null
+            ? 'Report action completed.'
+            : 'Report action completed, but the latest reports could not be reloaded.',
+      );
     } on Object catch (error) {
-      // Preserve the pending report and show a useful error.
+      // Preserve the current rows and show a useful retryable error.
       if (!mounted) return;
       setState(() => _errorMessage = _friendlyAdminError(error));
     } finally {
-      // Re-enable every card.
+      // Re-enable every card and allow the next dialog after cancel or finish.
+      _isResolving = false;
       if (mounted) setState(() => _workingReportId = null);
     }
   }
 
   // Collect the required five-or-more-character Admin audit note.
   Future<String?> _askForResolutionNote(String action) async {
-    // A local controller owns the dialog text only.
-    final controller = TextEditingController();
-
-    // showDialog returns the trimmed note or null on cancel.
-    final result = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('${_actionLabel(action)} report'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          minLines: 2,
-          maxLines: 4,
-          maxLength: 500,
-          decoration: const InputDecoration(
-            labelText: 'Resolution note',
-            hintText: 'Explain the Admin decision',
-            alignLabelWithHint: true,
-          ),
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final text = controller.text.trim();
-              if (text.length >= 5) Navigator.pop(dialogContext, text);
-            },
-            child: const Text('Confirm'),
-          ),
-        ],
-      ),
+    // The dialog State disposes its controller after its exit animation ends.
+    return showAdminResolutionNoteDialog(
+      context,
+      actionLabel: _actionLabel(action),
     );
-
-    // Dispose the temporary input after the dialog closes.
-    controller.dispose();
-    return result;
   }
 
   // Show one operation result at the bottom of the page.
@@ -1704,6 +1722,36 @@ List<_Row> _rows(dynamic response) {
         throw StateError('Supabase returned an invalid Admin row.');
       })
       .toList(growable: false);
+}
+
+// Convert an RPC map into a validated canonical resolved-report row.
+_Row _resolvedReportRow(
+  Map<Object?, Object?> response,
+  String expectedReportId,
+) {
+  final row = <String, dynamic>{
+    for (final entry in response.entries) entry.key.toString(): entry.value,
+  };
+  final status = row['status']?.toString() ?? '';
+  if (_id(row) != expectedReportId ||
+      !const <String>{
+        'dismissed',
+        'content_removed',
+        'account_restricted',
+      }.contains(status)) {
+    throw StateError(
+      'The server did not confirm the completed report action. Refresh and try again.',
+    );
+  }
+  return row;
+}
+
+// Read a backend integer without allowing an unexpected JSON type to crash UI.
+int _adminInt(Object? value, {required int fallback}) {
+  final parsed = value is num
+      ? value.toInt()
+      : int.tryParse(value?.toString() ?? '');
+  return parsed != null && parsed >= 1 ? parsed : fallback;
 }
 
 // Read a required row UUID.
