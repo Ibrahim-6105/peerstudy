@@ -26,7 +26,7 @@ A Student can:
 An Admin can:
 
 - sign in with a pre-created active account;
-- manage Academic Areas, Departments, and Subjects;
+- select the fixed Engineering or IT Academic Area and manage its Departments and Subjects;
 - create a Subject and its Community in one operation;
 - upload, replace, approve, edit, and remove Subject PDFs;
 - review pending and resolved reports, including ready target attachments;

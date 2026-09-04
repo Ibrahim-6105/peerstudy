@@ -36,9 +36,9 @@ physical-phone/manual acceptance action.
 - [x] TC3 — Active Admin authentication and role authorization pass; route guards are tested.
 - [x] TC4 — Restricted profiles cannot use protected backend data, including an existing token.
 - [x] TC5 — Student browses the complete hosted academic hierarchy and Subject data.
-- [ ] TC6 — Admin creates/updates catalog entries; Subject creation also creates one Community.
+- [ ] TC6 — Admin selects fixed Engineering/IT Areas and creates or updates Departments and Subjects; Subject creation also creates one Community.
 - [ ] TC7 — Admin uploads, replaces, edits, and removes a real approved PDF.
-- [ ] TC8 — Student opens the approved PDF in the internal viewer with page and zoom controls.
+- [ ] TC8 — Student opens the approved PDF through a temporary secure link in the device browser or PDF app.
 - [x] TC9 — Student selects one approved material and receives exactly ten real AI questions.
 - [x] TC10 — Exit confirmation is covered in Flutter tests; trusted hosted submission returns score and corrections.
 - [x] TC11 — Students create/edit/remove their own posts and comments with real counts and timestamps.

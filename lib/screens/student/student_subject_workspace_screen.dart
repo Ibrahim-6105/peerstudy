@@ -14,7 +14,7 @@ import 'package:peerstudy/providers/quiz_provider.dart';
 // SubjectRepository supplies the approved PDF catalog.
 import 'package:peerstudy/providers/subject_provider.dart';
 
-// The protected viewer requests secure access and supports verified caching.
+// The protected opener requests temporary access for the phone's PDF viewer.
 import 'package:peerstudy/screens/student/material_viewer_screen.dart';
 import 'package:peerstudy/screens/student/subject_community_views.dart';
 import 'package:peerstudy/screens/student/subject_quiz_view.dart';
@@ -253,12 +253,7 @@ class _OfficialMaterialsTabState extends State<_OfficialMaterialsTab> {
               _MaterialCard(
                 material: material,
                 onOpen: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (context) =>
-                          MaterialViewerScreen(material: material),
-                    ),
-                  );
+                  MaterialViewerScreen.open(context, material: material);
                 },
               ),
               const SizedBox(height: 8),
@@ -315,7 +310,7 @@ class _WorkspaceHeading extends StatelessWidget {
   }
 }
 
-// Explains the secure viewer and temporary cache before the file list.
+// Explains temporary access through the device's reliable PDF application.
 class _MaterialAccessNotice extends StatelessWidget {
   const _MaterialAccessNotice();
 
@@ -340,8 +335,8 @@ class _MaterialAccessNotice extends StatelessWidget {
               const SizedBox(width: 10),
               const Expanded(
                 child: Text(
-                  'Tap an approved PDF to open it securely. Viewer data is '
-                  'temporary and is not added to a permanent download library.',
+                  'Tap an approved PDF to open it securely in your PDF app or '
+                  'browser. The access link is temporary.',
                 ),
               ),
             ],
@@ -358,7 +353,7 @@ class _MaterialCard extends StatelessWidget {
 
   final StudyMaterial material;
 
-  // The parent opens the protected viewer with this exact material record.
+  // The parent opens this exact material through a temporary protected link.
   final VoidCallback onOpen;
 
   @override
@@ -383,7 +378,7 @@ class _MaterialCard extends StatelessWidget {
       child: Semantics(
         button: true,
         label: '$semanticDetails.',
-        hint: 'Opens the secure PDF viewer',
+        hint: 'Opens the secure PDF in your PDF app or browser',
         child: Card(
           clipBehavior: Clip.antiAlias,
           child: InkWell(

@@ -274,7 +274,7 @@ function makePdf(): Uint8Array {
   const factLines = [
     "PeerStudy is a study platform for university students.",
     "Students sign in using their LIMU university email address.",
-    "Administrators manage academic areas and departments.",
+    "Administrators choose a fixed academic area and manage departments.",
     "Each department contains one or more subjects.",
     "Each subject owns one matching student community.",
     "Students can create community posts and comments.",

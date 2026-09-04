@@ -37,9 +37,7 @@ dependencies:
   uuid: ^4.5.2
   # Community post and comment forms use the phone's normal file picker.
   file_picker: ^10.3.0
-  # Approved PDF materials open inside the simple student viewer.
-  pdfrx: ^2.4.7
-  # Private Community attachments open through short-lived signed links.
+  # Private Community attachments and official PDFs use temporary secure links.
   url_launcher: ^6.3.2
   shared_preferences: ^2.5.5
   sqflite: ^2.4.3

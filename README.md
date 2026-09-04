@@ -4,7 +4,7 @@ PeerStudy is a Flutter learning application for LIMU’s School of Technology an
 
 Students register with a complete `@limu.edu.ly` email, browse the academic hierarchy, open approved PDF materials, generate a ten-question quiz from one selected material, join the matching subject community, share private attachments with posts/comments, and privately report content.
 
-Admins use their pre-created account to manage academic areas, departments, subjects, materials, reports, and Student access. Creating a Subject also creates its one Community.
+Admins use their pre-created account to select one of the fixed Engineering or IT Academic Areas, then manage departments, subjects, materials, reports, and Student access. Creating a Subject also creates its one Community.
 
 ## System shape
 

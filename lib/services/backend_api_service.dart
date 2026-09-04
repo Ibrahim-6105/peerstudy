@@ -10,7 +10,6 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:peerstudy/models/community_attachment.dart';
-import 'package:peerstudy/models/subject.dart';
 import 'package:peerstudy/services/supabase_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -266,8 +265,14 @@ class BackendApiService {
     return Map<Object?, Object?>.unmodifiable(row);
   }
 
-  // Download and verify one approved official PDF with the current session.
-  Future<MaterialAccess> requestMaterialAccess(String materialId) async {
+  // Create short-lived external-viewer access for one approved official PDF.
+  //
+  // Community attachments already use this reliable signed-URL pattern. Using
+  // the same path for lecture PDFs avoids device-specific blank screens from
+  // an embedded renderer while Storage RLS still checks the signed-in account
+  // before the URL is created.
+  Future<Uri> requestMaterialAccess(String materialId) async {
+    final cleanMaterialId = _requiredUuidArgument(materialId, 'PDF');
     try {
       // RLS and this explicit filter both require an approved material.
       final row = await _client
@@ -275,17 +280,34 @@ class BackendApiService {
           .select(
             'id, subject_id, storage_path, version, checksum, status, mime_type, size_bytes',
           )
-          .eq('id', materialId)
+          .eq('id', cleanMaterialId)
           .eq('status', 'approved')
-          .single();
+          .maybeSingle()
+          .timeout(const Duration(seconds: 30));
 
-      // Refuse a non-PDF or incomplete row before downloading private bytes.
+      // A deleted, replaced, unapproved, or RLS-hidden row is an ordinary
+      // unavailable state, not an exception that should reach Flutter's UI.
+      if (row == null) {
+        throw const BackendException(
+          'This lecture is no longer available for your account.',
+          code: 'not-found',
+        );
+      }
+
+      // Refuse a non-PDF, foreign path, or incomplete row before signing it.
+      final rowId = row['id']?.toString() ?? '';
+      final subjectId = row['subject_id']?.toString() ?? '';
       final path = row['storage_path']?.toString() ?? '';
-      final checksum = row['checksum']?.toString() ?? '';
-      final mimeType = row['mime_type']?.toString() ?? '';
+      final checksum = row['checksum']?.toString().toLowerCase() ?? '';
+      final mimeType = row['mime_type']?.toString().toLowerCase() ?? '';
       final expectedSize = (row['size_bytes'] as num?)?.toInt() ?? 0;
-      if (!_isSafeStoragePath(path) ||
-          checksum.isEmpty ||
+      if (rowId != cleanMaterialId ||
+          !_isOwnedMaterialPath(
+            path,
+            subjectId: subjectId,
+            materialId: cleanMaterialId,
+          ) ||
+          !RegExp(r'^[0-9a-f]{64}$').hasMatch(checksum) ||
           mimeType != 'application/pdf' ||
           expectedSize <= 0 ||
           expectedSize > 25 * 1024 * 1024) {
@@ -295,37 +317,30 @@ class BackendApiService {
         );
       }
 
-      // A normal authenticated download follows the same Storage SELECT policy
-      // for Students and Admins. It avoids signed-URL range requests, which can
-      // remain waiting in embedded PDF viewers on some devices.
-      final bytes = await _client.storage
+      // Ten minutes gives a large lecture enough time to finish browser/PDF-app
+      // range requests. The URL is still temporary and contains no permanent
+      // public object address. The checksum nonce avoids stale replacement data.
+      final signedUrl = await _client.storage
           .from('subject-materials')
-          .download(path, cacheNonce: checksum)
-          .timeout(const Duration(minutes: 2));
+          .createSignedUrl(path, 600, cacheNonce: checksum)
+          .timeout(const Duration(seconds: 30));
 
-      // Never pass truncated, substituted, or non-PDF bytes to the renderer.
-      if (bytes.length != expectedSize ||
-          !_hasPdfSignature(bytes) ||
-          sha256.convert(bytes).toString().toLowerCase() !=
-              checksum.toLowerCase()) {
+      final uri = Uri.tryParse(signedUrl);
+      if (uri == null ||
+          !const <String>{'http', 'https'}.contains(uri.scheme) ||
+          !uri.hasAuthority) {
         throw const BackendException(
-          'This PDF failed its integrity check. Ask an Admin to replace it.',
-          code: 'invalid-pdf',
+          'The server returned an invalid PDF link. Please retry.',
+          code: 'invalid-response',
         );
       }
-
-      return MaterialAccess(
-        materialId: row['id']?.toString() ?? materialId,
-        bytes: bytes,
-        version: (row['version'] as num?)?.toInt() ?? 1,
-        checksum: checksum,
-      );
+      return uri;
     } on BackendException {
       rethrow;
     } on TimeoutException {
       throw const BackendException(
-        'The PDF download took too long. Check your connection and retry.',
-        code: 'download-timeout',
+        'The secure PDF link took too long. Check your connection and retry.',
+        code: 'network-timeout',
       );
     } on StorageException catch (error) {
       final status = int.tryParse(error.statusCode ?? '');
@@ -342,7 +357,7 @@ class BackendApiService {
         );
       }
       throw const BackendException(
-        'The PDF could not be downloaded. Check your connection and retry.',
+        'The PDF could not be opened securely. Check your connection and retry.',
         code: 'storage-error',
       );
     } on PostgrestException catch (error) {

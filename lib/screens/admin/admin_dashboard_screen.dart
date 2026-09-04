@@ -23,6 +23,14 @@ import 'package:url_launcher/url_launcher.dart';
 // A short alias makes database rows less intimidating in this beginner file.
 typedef _Row = Map<String, dynamic>;
 
+// Academic Areas are fixed for the current release. Admins choose one of these
+// parents but cannot create, rename, deactivate, or delete it from the app.
+const Set<String> _fixedAcademicAreaCodes = <String>{'ENGINEERING', 'IT'};
+const Map<String, int> _fixedAcademicAreaOrder = <String, int>{
+  'ENGINEERING': 0,
+  'IT': 1,
+};
+
 // AdminDashboardScreen owns the two use-case groups required by the PDF.
 class AdminDashboardScreen extends StatefulWidget {
   // The const constructor lets the router build this page efficiently.
@@ -190,7 +198,11 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     try {
       // Independent catalog reads run together to reduce dashboard latency.
       final results = await Future.wait<dynamic>(<Future<dynamic>>[
-        _client.from('schools').select().order('name'),
+        _client
+            .from('schools')
+            .select()
+            .eq('name', peerStudySchoolName)
+            .limit(1),
         _client
             .from('academic_areas')
             .select()
@@ -206,7 +218,28 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
 
       // Convert PostgREST dynamic data into predictable string-key maps.
       final schools = _rows(results[0]);
-      final areas = _rows(results[1]);
+      final school = schools.isEmpty ? null : schools.first;
+      final schoolId = school?['id']?.toString() ?? '';
+      final areas =
+          _rows(results[1])
+              .where(
+                (row) =>
+                    schoolId.isNotEmpty &&
+                    row['school_id']?.toString() == schoolId &&
+                    _fixedAcademicAreaCodes.contains(
+                      row['code']?.toString().trim().toUpperCase(),
+                    ),
+              )
+              .toList(growable: false)
+            ..sort((left, right) {
+              final leftCode =
+                  left['code']?.toString().trim().toUpperCase() ?? '';
+              final rightCode =
+                  right['code']?.toString().trim().toUpperCase() ?? '';
+              return (_fixedAcademicAreaOrder[leftCode] ?? 99).compareTo(
+                _fixedAcademicAreaOrder[rightCode] ?? 99,
+              );
+            });
       final departments = _rows(results[2]);
       final subjects = _rows(results[3]);
 
@@ -232,7 +265,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
 
       // Publish one consistent hierarchy selection.
       setState(() {
-        _school = schools.isEmpty ? null : schools.first;
+        _school = school;
         _areas = areas;
         _departments = departments;
         _subjects = subjects;
@@ -327,44 +360,6 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     return _subjects
         .where((row) => row['department_id']?.toString() == departmentId)
         .toList(growable: false);
-  }
-
-  // Add or edit one Academic Area under the fixed school.
-  Future<void> _editArea({_Row? existing}) async {
-    // A missing school means the seed invariant must be repaired first.
-    final schoolId = _school?['id']?.toString() ?? '';
-    if (schoolId.isEmpty) {
-      _showMessage('The School record is missing. Refresh the database seed.');
-      return;
-    }
-
-    // Open a quiet full page so the form remains comfortable on a phone.
-    final input = await Navigator.push<AcademicAreaFormValue>(
-      context,
-      MaterialPageRoute<AcademicAreaFormValue>(
-        builder: (context) => AcademicAreaFormPage(existing: existing),
-      ),
-    );
-    if (!mounted || input == null) return;
-
-    // Execute one Admin-only direct table mutation.
-    await _runAdminWrite(() async {
-      final values = <String, dynamic>{
-        'school_id': schoolId,
-        'code': input.code,
-        'name': input.name,
-        'status': input.status,
-        'display_order': input.displayOrder,
-      };
-      if (existing == null) {
-        await _client.from('academic_areas').insert(values);
-      } else {
-        await _client
-            .from('academic_areas')
-            .update(values)
-            .eq('id', _id(existing));
-      }
-    }, successMessage: existing == null ? 'Area added.' : 'Area updated.');
   }
 
   // Add or edit one Department under the selected Area.
@@ -472,25 +467,21 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     );
   }
 
-  // Confirm and delete one Area/Department; dependent catalog rows stay guarded.
-  Future<void> _deleteCatalogRow({
-    required String table,
-    required _Row row,
-    required String label,
-  }) async {
+  // Confirm and delete one Department; fixed Academic Areas never reach here.
+  Future<void> _deleteDepartment(_Row department) async {
     // The confirmation names the exact target.
     final confirmed = await _confirm(
-      title: 'Delete $label?',
+      title: 'Delete Department?',
       message:
-          'Delete "${row['name']}"? Rows with dependent content are protected by the database.',
+          'Delete "${department['name']}"? Departments with Subjects are protected by the database.',
       confirmLabel: 'Delete',
     );
     if (!mounted || !confirmed) return;
 
     // Admin RLS and foreign keys make this mutation fail closed.
     await _runAdminWrite(
-      () => _client.from(table).delete().eq('id', _id(row)),
-      successMessage: '$label deleted.',
+      () => _client.from('departments').delete().eq('id', _id(department)),
+      successMessage: 'Department deleted.',
     );
   }
 
@@ -646,7 +637,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     );
   }
 
-  // Open an approved official PDF through the same verified viewer as Students.
+  // Open an approved official PDF through the same device viewer as Students.
   void _openMaterial(_Row row) {
     if (_isWorking || row['status']?.toString() != 'approved') {
       _showMessage('Only an approved PDF can be opened.');
@@ -657,11 +648,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
       _showMessage('This PDF record is incomplete. Replace it and try again.');
       return;
     }
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (context) => MaterialViewerScreen(material: material),
-      ),
-    );
+    MaterialViewerScreen.open(context, material: material);
   }
 
   // Run one Admin mutation with uniform progress, refresh, and error handling.
@@ -740,7 +727,6 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     // Filter dependent rows from the canonical in-memory catalog.
     final visibleDepartments = _visibleDepartmentsFor(_areaId);
     final visibleSubjects = _visibleSubjectsFor(_departmentId);
-    final selectedArea = _rowById(_areas, _areaId);
     final selectedDepartment = _rowById(_departments, _departmentId);
     final selectedSubject = _rowById(_subjects, _subjectId);
 
@@ -782,23 +768,11 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
                     ),
                   ],
                   const SizedBox(height: 12),
-                  // Area selector and CRUD controls.
-                  _CatalogSelectorCard(
-                    title: '1. Academic Area',
+                  // Areas are fixed: Admin chooses Engineering or IT only.
+                  _AcademicAreaDropdownCard(
                     selectedId: _areaId,
                     rows: _areas,
                     onChanged: _isWorking ? null : _selectArea,
-                    onAdd: _isWorking ? null : () => _editArea(),
-                    onEdit: _isWorking || selectedArea == null
-                        ? null
-                        : () => _editArea(existing: selectedArea),
-                    onDelete: _isWorking || selectedArea == null
-                        ? null
-                        : () => _deleteCatalogRow(
-                            table: 'academic_areas',
-                            row: selectedArea,
-                            label: 'Academic Area',
-                          ),
                   ),
                   const SizedBox(height: 12),
                   // Department selector and CRUD controls.
@@ -815,11 +789,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
                         : () => _editDepartment(existing: selectedDepartment),
                     onDelete: _isWorking || selectedDepartment == null
                         ? null
-                        : () => _deleteCatalogRow(
-                            table: 'departments',
-                            row: selectedDepartment,
-                            label: 'Department',
-                          ),
+                        : () => _deleteDepartment(selectedDepartment),
                   ),
                   const SizedBox(height: 12),
                   // Subject selector and atomic create-with-Community controls.
@@ -1244,7 +1214,47 @@ class _ReportsTabState extends State<_ReportsTab> {
   }
 }
 
-// _CatalogSelectorCard shows one hierarchy level and its CRUD buttons.
+// The current release has exactly two fixed Academic Areas. This dedicated
+// selector intentionally exposes no Add, Edit, or Delete affordance.
+class _AcademicAreaDropdownCard extends StatelessWidget {
+  const _AcademicAreaDropdownCard({
+    required this.selectedId,
+    required this.rows,
+    required this.onChanged,
+  });
+
+  final String? selectedId;
+  final List<_Row> rows;
+  final ValueChanged<String?>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: DropdownButtonFormField<String>(
+          key: ValueKey<String?>('Academic Area:$selectedId:${rows.length}'),
+          initialValue: _existingId(selectedId, rows),
+          isExpanded: true,
+          decoration: const InputDecoration(labelText: '1. Academic Area'),
+          items: rows
+              .map((row) {
+                final code = row['code']?.toString().trim().toUpperCase() ?? '';
+                return DropdownMenuItem<String>(
+                  value: _id(row),
+                  child: Text(code == 'ENGINEERING' ? 'Engineering' : 'IT'),
+                );
+              })
+              .toList(growable: false),
+          onChanged: rows.isEmpty ? null : onChanged,
+        ),
+      ),
+    );
+  }
+}
+
+// _CatalogSelectorCard shows one editable hierarchy level and its CRUD buttons.
 class _CatalogSelectorCard extends StatelessWidget {
   // All callbacks become null while an Admin mutation is running.
   const _CatalogSelectorCard({

@@ -203,7 +203,7 @@ Use fresh data and record each result:
 1. Register and sign in as a Student.
 2. Confirm School, Area, Department, and Subject navigation.
 3. Sign in as Admin and upload one real approved PDF.
-4. Return as Student and open it in the internal viewer.
+4. Return as Student and open it through the temporary secure link in the device browser or PDF app.
 5. Select that material, explicitly start a quiz, answer ten questions, submit, and review corrections.
 6. Create a post and comment from two Student sessions; verify real counts and timestamps.
 7. Report one post or comment and verify the report is private.

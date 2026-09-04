@@ -1,11 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:peerstudy/models/subject.dart';
+import 'package:peerstudy/screens/student/material_viewer_screen.dart';
 import 'package:peerstudy/services/backend_api_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -17,78 +20,89 @@ void main() {
   const materialId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
   const storagePath = '$subjectId/$materialId/lecture.pdf';
 
-  test('approved PDF uses one authenticated full Storage download', () async {
-    final bytes = _validPdfBytes();
-    final checksum = sha256.convert(bytes).toString();
+  test(
+    'approved PDF creates one signed URL without downloading bytes',
+    () async {
+      const checksum =
+          '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
+      final calls = <String>[];
+      final client = SupabaseClient(
+        baseUrl,
+        apiKey,
+        httpClient: MockClient((request) async {
+          calls.add('${request.method} ${request.url.path}');
+
+          if (request.url.path == '/rest/v1/subject_materials') {
+            expect(
+              request.headers['authorization'],
+              'Bearer test-access-token',
+            );
+            return _jsonResponse(
+              _materialRow(checksum: checksum, sizeBytes: 2 * 1024 * 1024),
+              request: request,
+            );
+          }
+
+          if (request.url.path ==
+              '/storage/v1/object/sign/subject-materials/$storagePath') {
+            expect(request.method, 'POST');
+            expect(
+              request.headers['authorization'],
+              'Bearer test-access-token',
+            );
+            expect(jsonDecode(request.body), <String, Object?>{
+              'expiresIn': 600,
+            });
+            return _jsonResponse(<String, Object?>{
+              'signedURL':
+                  '/object/sign/subject-materials/$storagePath?token=test-token',
+            }, request: request);
+          }
+
+          return _jsonResponse(
+            <String, Object?>{'message': 'Unexpected test request'},
+            request: request,
+            statusCode: 500,
+          );
+        }),
+      );
+      addTearDown(client.dispose);
+      await _restoreTestSession(client, userId: userId);
+
+      final uri = await BackendApiService(
+        client: client,
+      ).requestMaterialAccess(materialId);
+
+      expect(uri.scheme, 'https');
+      expect(uri.host, 'peerstudy.test');
+      expect(uri.queryParameters['token'], 'test-token');
+      expect(uri.queryParameters['cacheNonce'], checksum);
+      expect(calls, <String>[
+        'GET /rest/v1/subject_materials',
+        'POST /storage/v1/object/sign/subject-materials/$storagePath',
+      ]);
+      expect(
+        calls.where(
+          (call) =>
+              call == 'GET /storage/v1/object/subject-materials/$storagePath',
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test('invalid material metadata is rejected before signing', () async {
     final calls = <String>[];
     final client = SupabaseClient(
       baseUrl,
       apiKey,
       httpClient: MockClient((request) async {
         calls.add('${request.method} ${request.url.path}');
-
-        if (request.url.path == '/rest/v1/subject_materials') {
-          expect(request.headers['authorization'], 'Bearer test-access-token');
-          return _jsonResponse(
-            _materialRow(checksum: checksum, sizeBytes: bytes.length),
-            request: request,
-          );
-        }
-
-        if (request.url.path ==
-            '/storage/v1/object/subject-materials/$storagePath') {
-          expect(request.method, 'GET');
-          expect(request.headers['authorization'], 'Bearer test-access-token');
-          expect(request.url.queryParameters['cacheNonce'], checksum);
-          return http.Response.bytes(
-            bytes,
-            200,
-            request: request,
-            headers: const <String, String>{'content-type': 'application/pdf'},
-          );
-        }
-
-        return _jsonResponse(
-          <String, Object?>{'message': 'Unexpected test request'},
-          request: request,
-          statusCode: 500,
-        );
-      }),
-    );
-    addTearDown(client.dispose);
-    await _restoreTestSession(client, userId: userId);
-
-    final access = await BackendApiService(
-      client: client,
-    ).requestMaterialAccess(materialId);
-
-    expect(access.materialId, materialId);
-    expect(access.bytes, bytes);
-    expect(access.checksum, checksum);
-    expect(access.sourceName, '$materialId-3-$checksum.pdf');
-    expect(calls, <String>[
-      'GET /rest/v1/subject_materials',
-      'GET /storage/v1/object/subject-materials/$storagePath',
-    ]);
-    expect(calls.where((call) => call.contains('/object/sign/')), isEmpty);
-  });
-
-  test('downloaded PDF with a mismatched checksum is rejected', () async {
-    final bytes = _validPdfBytes();
-    final wrongChecksum = sha256.convert(<int>[1, 2, 3]).toString();
-    final client = SupabaseClient(
-      baseUrl,
-      apiKey,
-      httpClient: MockClient((request) async {
         if (request.url.path == '/rest/v1/subject_materials') {
           return _jsonResponse(
-            _materialRow(checksum: wrongChecksum, sizeBytes: bytes.length),
+            _materialRow(checksum: 'not-a-sha256', sizeBytes: 1024),
             request: request,
           );
-        }
-        if (request.url.path ==
-            '/storage/v1/object/subject-materials/$storagePath') {
-          return http.Response.bytes(bytes, 200, request: request);
         }
         return _jsonResponse(
           <String, Object?>{'message': 'Unexpected test request'},
@@ -104,10 +118,69 @@ void main() {
       BackendApiService(client: client).requestMaterialAccess(materialId),
       throwsA(
         isA<BackendException>()
-            .having((error) => error.code, 'code', 'invalid-pdf')
-            .having((error) => error.message, 'message', contains('integrity')),
+            .having((error) => error.code, 'code', 'failed-precondition')
+            .having(
+              (error) => error.message,
+              'message',
+              contains('approved PDF'),
+            ),
       ),
     );
+    expect(calls, <String>['GET /rest/v1/subject_materials']);
+  });
+
+  test(
+    'deleted or inaccessible material returns a safe not-found error',
+    () async {
+      final client = SupabaseClient(
+        baseUrl,
+        apiKey,
+        httpClient: MockClient((request) async {
+          expect(request.url.path, '/rest/v1/subject_materials');
+          return _jsonResponse(<Object?>[], request: request);
+        }),
+      );
+      addTearDown(client.dispose);
+      await _restoreTestSession(client, userId: userId);
+
+      await expectLater(
+        BackendApiService(client: client).requestMaterialAccess(materialId),
+        throwsA(
+          isA<BackendException>()
+              .having((error) => error.code, 'code', 'not-found')
+              .having(
+                (error) => error.message,
+                'message',
+                contains('no longer available'),
+              ),
+        ),
+      );
+    },
+  );
+
+  test('invalid material ID is rejected without a network request', () async {
+    var requested = false;
+    final client = SupabaseClient(
+      baseUrl,
+      apiKey,
+      httpClient: MockClient((request) async {
+        requested = true;
+        return _jsonResponse(<Object?>[], request: request);
+      }),
+    );
+    addTearDown(client.dispose);
+
+    await expectLater(
+      BackendApiService(client: client).requestMaterialAccess('not-a-uuid'),
+      throwsA(
+        isA<BackendException>().having(
+          (error) => error.code,
+          'code',
+          'invalid-argument',
+        ),
+      ),
+    );
+    expect(requested, isFalse);
   });
 
   test('Admin upload rejects a renamed non-PDF before Storage', () async {
@@ -154,7 +227,144 @@ void main() {
     expect(calls, isEmpty);
   });
 
-  test('official viewer renders verified bytes without URI range access', () {
+  testWidgets('shared opener launches one external viewer after rapid taps', (
+    tester,
+  ) async {
+    final accessGate = Completer<Uri>();
+    const signedUri = 'https://peerstudy.test/lecture.pdf?token=temporary';
+    var accessRequests = 0;
+    var launchRequests = 0;
+    late BuildContext sourceContext;
+    Future<void>? opening;
+
+    Future<Uri> loadAccess(String materialId) {
+      accessRequests += 1;
+      return accessGate.future;
+    }
+
+    Future<bool> launchExternally(Uri uri) async {
+      launchRequests += 1;
+      expect(uri, Uri.parse(signedUri));
+      return true;
+    }
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) {
+            sourceContext = context;
+            return Scaffold(
+              body: FilledButton(
+                onPressed: () {
+                  opening = MaterialViewerScreen.open(
+                    context,
+                    material: _testMaterial(),
+                    accessLoader: loadAccess,
+                    externalLauncher: launchExternally,
+                  );
+                },
+                child: const Text('Open lecture'),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open lecture'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(accessRequests, 1);
+    expect(find.byType(MaterialViewerScreen), findsOneWidget);
+    expect(find.text('Opening secure lecture PDF...'), findsOneWidget);
+
+    // Simulate another source-card tap while the first request is unresolved.
+    await MaterialViewerScreen.open(
+      sourceContext,
+      material: _testMaterial(),
+      accessLoader: loadAccess,
+      externalLauncher: launchExternally,
+    );
+    expect(accessRequests, 1);
+
+    accessGate.complete(Uri.parse(signedUri));
+    await tester.pumpAndSettle();
+    await opening;
+
+    expect(launchRequests, 1);
+    expect(find.text('Open lecture'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('external launch failure shows a retry instead of a red screen', (
+    tester,
+  ) async {
+    var accessRequests = 0;
+    var launchRequests = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MaterialViewerScreen(
+          material: _testMaterial(),
+          accessLoader: (materialId) async {
+            accessRequests += 1;
+            return Uri.parse('https://peerstudy.test/lecture.pdf?token=test');
+          },
+          externalLauncher: (uri) async {
+            launchRequests += 1;
+            return launchRequests > 1;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('could not be opened in your PDF app or browser'),
+      findsOneWidget,
+    );
+    expect(find.text('Try again'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text('Try again'));
+    await tester.pumpAndSettle();
+
+    expect(accessRequests, 2);
+    expect(launchRequests, 2);
+    expect(find.text('The lecture PDF opened securely.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('missing lecture displays the safe backend message', (
+    tester,
+  ) async {
+    var launched = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MaterialViewerScreen(
+          material: _testMaterial(),
+          accessLoader: (materialId) async => throw const BackendException(
+            'This lecture is no longer available for your account.',
+            code: 'not-found',
+          ),
+          externalLauncher: (uri) async {
+            launched = true;
+            return true;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('This lecture is no longer available for your account.'),
+      findsOneWidget,
+    );
+    expect(launched, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  test('official viewer uses the reliable external signed-link path', () {
     final viewer = File(
       'lib/screens/student/material_viewer_screen.dart',
     ).readAsStringSync();
@@ -163,26 +373,30 @@ void main() {
     ).readAsStringSync();
     final accessSection = _section(
       service,
-      'Future<MaterialAccess> requestMaterialAccess',
+      'Future<Uri> requestMaterialAccess',
       'Future<SignedUploadSession> createMaterialUpload',
     );
 
-    expect(viewer, contains('PdfViewer.data('));
-    expect(viewer, contains('access.bytes'));
-    expect(viewer, isNot(contains('PdfViewer.uri(')));
-    expect(viewer, isNot(contains('preferRangeAccess')));
+    expect(viewer, contains('LaunchMode.externalApplication'));
+    expect(viewer, contains('_activeMaterialIds'));
+    expect(viewer, isNot(contains('PdfViewer.')));
+    expect(viewer, isNot(contains('pdfrx')));
     expect(accessSection, contains(".from('subject-materials')"));
-    expect(accessSection, contains('.download(path, cacheNonce: checksum)'));
-    expect(accessSection, isNot(contains('createSignedUrl')));
+    expect(accessSection, contains('createSignedUrl(path, 600'));
+    expect(accessSection, isNot(contains('.download(')));
   });
 
-  test('Admin material list exposes the shared Open PDF viewer', () {
+  test('Student and Admin material lists use the same guarded opener', () {
     final dashboard = File(
       'lib/screens/admin/admin_dashboard_screen.dart',
     ).readAsStringSync();
+    final studentWorkspace = File(
+      'lib/screens/student/student_subject_workspace_screen.dart',
+    ).readAsStringSync();
 
     expect(dashboard, contains("tooltip: 'Open PDF'"));
-    expect(dashboard, contains('MaterialViewerScreen(material: material)'));
+    expect(dashboard, contains('MaterialViewerScreen.open('));
+    expect(studentWorkspace, contains('MaterialViewerScreen.open('));
     expect(dashboard, contains('StudyMaterial.fromSupabase(row)'));
   });
 
@@ -218,7 +432,7 @@ void main() {
     final materialForm = _section(
       forms,
       'class MaterialFormValue',
-      '// AcademicAreaFormPage',
+      '// DepartmentFormPage',
     );
     final materialPage = _section(
       forms,
@@ -242,7 +456,7 @@ void main() {
     final subjectWrite = _section(
       dashboard,
       'Future<void> _editSubject',
-      'Future<void> _deleteCatalogRow',
+      'Future<void> _deleteDepartment',
     );
     final provider = File(
       'lib/providers/subject_provider.dart',
@@ -268,16 +482,20 @@ void main() {
   });
 }
 
-Uint8List _validPdfBytes() {
-  return Uint8List.fromList(
-    ascii.encode(
-      '%PDF-1.4\n'
-      '1 0 obj\n<< /Type /Catalog >>\nendobj\n'
-      'trailer\n<< /Root 1 0 R >>\n'
-      '%%EOF\n',
-    ),
-  );
-}
+StudyMaterial _testMaterial() => StudyMaterial(
+  id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+  subjectId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  title: 'Test lecture',
+  storagePath:
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/'
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc/lecture.pdf',
+  version: 1,
+  status: 'approved',
+  mimeType: 'application/pdf',
+  sizeBytes: 1024,
+  checksum: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+  updatedAt: DateTime.utc(2026, 1, 1),
+);
 
 Map<String, Object?> _materialRow({
   required String checksum,

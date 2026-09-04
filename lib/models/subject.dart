@@ -4,8 +4,6 @@
 // A model gives one Supabase database row clear Dart field names. PeerStudy's
 // complete path is School -> Academic Area -> Department -> Subject.
 
-import 'dart:typed_data';
-
 // The corrected master limits the first release to this one school.
 const String peerStudySchoolName = 'School of Technology and Engineering';
 
@@ -266,39 +264,6 @@ class StudyMaterial {
   }
 }
 
-// Verified bytes for one approved material returned by the trusted backend.
-class MaterialAccess {
-  const MaterialAccess({
-    required this.materialId,
-    required this.bytes,
-    required this.version,
-    required this.checksum,
-  });
-
-  final String materialId;
-  final Uint8List bytes;
-  final int version;
-  final String checksum;
-
-  // pdfrx uses this stable private identifier only for its temporary cache.
-  String get sourceName => '$materialId-$version-$checksum.pdf';
-
-  factory MaterialAccess.fromMap(Map<Object?, Object?> data) {
-    final rawBytes = data['bytes'];
-    final bytes = switch (rawBytes) {
-      Uint8List value => value,
-      List<int> value => Uint8List.fromList(value),
-      _ => Uint8List(0),
-    };
-    return MaterialAccess(
-      materialId: _objectText(data['materialId'] ?? data['material_id']),
-      bytes: bytes,
-      version: _objectInteger(data['version']),
-      checksum: _objectText(data['checksum']),
-    );
-  }
-}
-
 // Small parsing helpers keep every beginner-facing factory short and uniform.
 String _text(Object? value, {String fallback = ''}) {
   final text = value?.toString().trim() ?? '';
@@ -320,7 +285,3 @@ DateTime _dateTime(Object? value) {
   if (value is DateTime) return value;
   return DateTime.tryParse(value?.toString() ?? '') ?? DateTime(1970);
 }
-
-String _objectText(Object? value) => _text(value);
-
-int _objectInteger(Object? value) => _integer(value);

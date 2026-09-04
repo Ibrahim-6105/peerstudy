@@ -202,7 +202,7 @@ The Admin receives a separate dashboard with two tabs.
 
 The Academic tab manages the real hierarchy stored in PostgreSQL:
 
-1. Academic Areas
+1. Academic Area (fixed Engineering/IT dropdown)
 2. Departments
 3. Subjects
 4. Official PDF Materials
@@ -212,7 +212,8 @@ transaction. Official PDFs begin in an `uploading` state, are uploaded to a
 private Storage bucket, receive a checksum, and become `approved` only when the
 upload has completed.
 
-An Admin can add/edit catalog rows, upload or replace a PDF, edit material
+Academic Areas are fixed to Engineering and IT and have no Admin create, edit,
+or delete controls. An Admin can add/edit Department and Subject rows, upload or replace a PDF, edit material
 details, and remove a material. Removing a material closes Student access first;
 private byte cleanup happens afterward. One official PDF may be at most 25 MiB.
 Catalog forms can mark rows active/inactive, and deletion fails safely when
@@ -393,7 +394,7 @@ A model turns a loose JSON/database row into a predictable Dart object.
 | File | Easy purpose in PeerStudy |
 | --- | --- |
 | `app_user.dart` | Describes the signed-in profile: UUID, full name, LIMU email, Student/Admin role, active/restricted status, and timestamps; malformed security values fail closed |
-| `subject.dart` | Describes School, Area, Department, Subject, approved Material, and temporary Material access URL; checks that parent IDs and statuses make sense |
+| `subject.dart` | Describes School, the two supported Areas, Department, Subject, and approved Material; checks that parent IDs and statuses make sense |
 | `quiz.dart` | Describes and validates public quiz questions, in-progress answers, submitted results, and corrections; its pre-submit question model has no answer-key property |
 | `community_attachment.dart` | Describes attachment metadata and selected local bytes; owns allowed types, three-file limit, 10 MiB limit, validation, and readable size text |
 
@@ -418,7 +419,7 @@ Provider package. These are ordinary Dart controllers/repositories used by
 | `app_router.dart` | Converts each route string into the correct screen, adds `RoleGuard` to protected pages, and shows a useful Page Not Found screen for an invalid route |
 
 Only top-level destinations use this named-route table. Nested pages such as
-Departments, Subjects, Subject Workspace, PDF Viewer, Account, and Admin forms
+Departments, Subjects, Subject Workspace, secure PDF opener, Account, and Admin forms
 are opened directly with `MaterialPageRoute`.
 
 ## `lib/screens/auth/` - account screens
@@ -442,7 +443,7 @@ actual Auth/session work.
 | `student_departments_screen.dart` | First loads the active Academic Areas, then lists valid Departments for the Area the Student taps |
 | `student_subjects_screen.dart` | Lists active Subjects belonging to one Department and saves the chosen study path |
 | `student_subject_workspace_screen.dart` | Hosts the selected Subject's Materials, AI Quiz, and Community tabs and protects an unfinished quiz from accidental exit |
-| `material_viewer_screen.dart` | Requests a ten-minute signed URL for one approved PDF and displays it internally with page, scroll, and zoom controls |
+| `material_viewer_screen.dart` | Requests a temporary signed URL for one approved PDF and opens it in the device's browser or installed PDF app, with loading, retry, and duplicate-tap protection |
 | `subject_quiz_view.dart` | Shows Material selection, generation/loading/error states, ten-question answering, Submit, score, and correction cards |
 | `subject_community_views.dart` | Complete Community UI: realtime feed, posts, comments, edit/remove, attachment pick/upload/open/download, and private report sheet |
 
@@ -451,7 +452,7 @@ actual Auth/session work.
 | File | Easy purpose in PeerStudy |
 | --- | --- |
 | `admin_dashboard_screen.dart` | Loads and manages catalog rows, official PDF metadata/uploads, pending/resolved reports, target previews, attachments, and report actions |
-| `admin_form_pages.dart` | Validated full-page forms and result objects for Area, Department, Subject, and Material add/edit work |
+| `admin_form_pages.dart` | Validated full-page forms and result objects for Department, Subject, and Material add/edit work; Areas are fixed dropdown choices |
 | `admin_resolution_note_dialog.dart` | Small lifecycle-safe dialog that requires the Admin's audit note before dismiss/remove/restrict is submitted |
 
 ## `lib/screens/profile/` - account and information pages
@@ -516,8 +517,7 @@ editing dependencies, run `flutter pub get`.
 | `supabase_flutter` | Auth sessions, PostgREST database reads, RPCs, private Storage, Realtime, and Edge Function calls |
 | `uuid` | Unique idempotency/request keys so retries do not create duplicate posts, uploads, quizzes, or attempts |
 | `file_picker` | Lets Admins select official PDFs and Students select Community attachments |
-| `pdfrx` | Renders an approved PDF inside `material_viewer_screen.dart` |
-| `url_launcher` | Opens support mail links and temporary Community attachment links with an external app |
+| `url_launcher` | Opens support mail links, official lecture PDFs, and temporary Community attachment links with an external app |
 | `shared_preferences` | Stores the safe login marker and browser/desktop preference fallback |
 | `sqflite` | Stores settings in a small SQLite database on Android and iOS |
 | `crypto` | Computes SHA-256 for uploaded official PDFs and for stable deterministic UUID compatibility helpers; Community attachment hashing is repeated by its server function |
@@ -642,10 +642,11 @@ Admin selects PDF
   -> row = approved
   -> Student taps Material
   -> ten-minute signed URL
-  -> pdfrx viewer
+  -> device browser or installed PDF app
 ```
 
-The file is private. A Student does not receive a permanent public Storage URL.
+The file is private. A Student receives only a temporary signed link after RLS
+checks access; PeerStudy never exposes a permanent public Storage URL.
 
 ## AI Quiz
 
