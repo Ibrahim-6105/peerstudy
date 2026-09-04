@@ -1795,7 +1795,14 @@ class BackendApiService {
             errorMap['message']?.toString() ??
             errorMap['error']?.toString() ??
             'The quiz service rejected the request.';
-        throw BackendException(message, code: 'function-error');
+        final code = errorMap['code']?.toString().trim() ?? '';
+        final requestId = errorMap['request_id']?.toString().trim() ?? '';
+        throw BackendException(
+          message,
+          code: code.isEmpty ? 'function-error' : code,
+          requestId: requestId.isEmpty ? null : requestId,
+          httpStatus: response.status,
+        );
       }
 
       // Return the exact JSON object produced by the function.

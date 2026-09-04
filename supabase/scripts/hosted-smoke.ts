@@ -1316,10 +1316,11 @@ async function main(): Promise<void> {
 
     // Upload one real PDF fixture and record its private Material lifecycle.
     const pdfBytes = makePdf();
-    const storagePath = `${subjectId}/${crypto.randomUUID()}.pdf`;
-    cleanup.storagePaths.push(storagePath);
-    await uploadPdf(storagePath, pdfBytes, admin.accessToken);
+    const materialId = crypto.randomUUID();
+    const storagePath =
+      `${subjectId}/${materialId}/${Date.now()}_hosted-acceptance.pdf`;
     const checksum = await sha256Hex(pdfBytes);
+    cleanup.storagePaths.push(storagePath);
     const materialInsert = await adminRequest(
       "/rest/v1/subject_materials",
       admin.accessToken,
@@ -1327,6 +1328,7 @@ async function main(): Promise<void> {
         method: "POST",
         prefer: "return=representation",
         body: {
+          id: materialId,
           subject_id: subjectId,
           uploaded_by: admin.userId,
           title: "Hosted acceptance material",
@@ -1344,6 +1346,9 @@ async function main(): Promise<void> {
     const material = asSingleRow(materialInsert.data);
     assert(typeof material.id === "string", "Material metadata has no id.");
     cleanup.materialIds.push(material.id);
+    // The current Storage policy intentionally requires the uploading metadata
+    // row and exact Subject/Material path to exist before accepting bytes.
+    await uploadPdf(storagePath, pdfBytes, admin.accessToken);
     const preApprovalDownload = await downloadPdf(
       storagePath,
       author.accessToken,

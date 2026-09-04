@@ -144,11 +144,13 @@ The protected function requires:
 
 ```text
 AI_API_KEY=YOUR_REAL_PROVIDER_KEY
-AI_MODEL=gemini-3.5-flash
-AI_FALLBACK_MODEL=gemini-3.1-flash-lite
+AI_MODEL=gemini-3.5-flash-lite
+AI_FALLBACK_MODELS=gemini-3.1-flash-lite,gemini-3.5-flash
+AI_TIMEOUT_MS=80000
+AI_ATTEMPT_TIMEOUT_MS=32000
 ```
 
-The default endpoint shape is Gemini-compatible. `AI_API_BASE_URL`, `AI_TIMEOUT_MS`, `QUIZ_GENERATION_PER_MINUTE`, and `ALLOWED_ORIGIN` are optional operator settings.
+The default endpoint shape is Gemini-compatible. `AI_FALLBACK_MODELS` is a comma-separated failover chain; the singular fallback name remains supported for older deployments. `AI_API_BASE_URL`, `AI_TIMEOUT_MS`, `AI_ATTEMPT_TIMEOUT_MS`, `QUIZ_GENERATION_PER_MINUTE`, and `ALLOWED_ORIGIN` are optional operator settings. Each provider attempt has its own timeout inside the overall deadline so one stalled model cannot prevent failover.
 
 Keep values in an ignored environment file and upload them through the CLI:
 

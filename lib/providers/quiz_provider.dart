@@ -143,6 +143,10 @@ class SubjectQuizController {
   String? _generationKey;
   String? _submissionKey;
 
+  // A rapid double tap must not spend two provider requests before the first
+  // idempotent result has had a chance to reach the database.
+  bool _generationInFlight = false;
+
   // This becomes true when the Subject workspace has been closed.
   bool _isDisposed = false;
 
@@ -191,7 +195,9 @@ class SubjectQuizController {
       );
       return;
     }
+    if (_generationInFlight || _isDisposed) return;
 
+    _generationInFlight = true;
     _submissionKey = null;
     final idempotencyKey = _generationKey ??= _uuid.v4();
     _change(
@@ -232,6 +238,8 @@ class SubjectQuizController {
               '${_friendlyError(error)} Retry safely to recover the same request.',
         ),
       );
+    } finally {
+      _generationInFlight = false;
     }
   }
 

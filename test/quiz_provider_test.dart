@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:peerstudy/providers/quiz_provider.dart';
 
@@ -108,6 +110,62 @@ void main() {
     expect(controller.state.status, QuizLoadStatus.choosingMaterial);
     expect(controller.state.attempt, isNull);
     expect(controller.state.hasIncompleteQuiz, isFalse);
+  });
+
+  test('rapid Start taps share one in-flight generation request', () async {
+    final response = Completer<Map<Object?, Object?>>();
+    var generationCount = 0;
+    final capturedKeys = <String>[];
+    final controller = SubjectQuizController(
+      subjectId: 'subject-uuid',
+      generationCall:
+          ({required subjectId, required materialId, required idempotencyKey}) {
+            generationCount += 1;
+            capturedKeys.add(idempotencyKey);
+            return response.future;
+          },
+    );
+    controller.selectMaterial('material-uuid');
+
+    final first = controller.start();
+    final duplicate = controller.start();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(generationCount, 1);
+    expect(capturedKeys, hasLength(1));
+    expect(controller.state.status, QuizLoadStatus.loading);
+
+    response.complete(_quizResponse('subject-uuid', 'material-uuid'));
+    await Future.wait(<Future<void>>[first, duplicate]);
+    expect(controller.state.status, QuizLoadStatus.ready);
+  });
+
+  test('retry keeps the same idempotency key after a safe failure', () async {
+    var generationCount = 0;
+    final capturedKeys = <String>[];
+    final controller = SubjectQuizController(
+      subjectId: 'subject-uuid',
+      generationCall:
+          ({
+            required subjectId,
+            required materialId,
+            required idempotencyKey,
+          }) async {
+            generationCount += 1;
+            capturedKeys.add(idempotencyKey);
+            if (generationCount == 1) throw Exception('Temporary AI failure');
+            return _quizResponse(subjectId, materialId);
+          },
+    );
+    controller.selectMaterial('material-uuid');
+
+    await controller.start();
+    expect(controller.state.status, QuizLoadStatus.error);
+    await controller.retry();
+
+    expect(generationCount, 2);
+    expect(capturedKeys[1], capturedKeys[0]);
+    expect(controller.state.status, QuizLoadStatus.ready);
   });
 }
 

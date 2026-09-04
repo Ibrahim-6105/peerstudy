@@ -92,11 +92,13 @@ Create the ignored file `supabase/functions/.env` locally:
 
 ```text
 AI_API_KEY=YOUR_REAL_PROVIDER_KEY
-AI_MODEL=gemini-3.5-flash
-AI_FALLBACK_MODEL=gemini-3.1-flash-lite
+AI_MODEL=gemini-3.5-flash-lite
+AI_FALLBACK_MODELS=gemini-3.1-flash-lite,gemini-3.5-flash
+AI_TIMEOUT_MS=80000
+AI_ATTEMPT_TIMEOUT_MS=32000
 ```
 
-Optional server settings include `AI_API_BASE_URL`, `AI_TIMEOUT_MS`, `QUIZ_GENERATION_PER_MINUTE`, and `ALLOWED_ORIGIN`. Do not change them unless the deployment owner understands their effect.
+Optional server settings include `AI_API_BASE_URL`, `AI_TIMEOUT_MS`, `AI_ATTEMPT_TIMEOUT_MS`, `QUIZ_GENERATION_PER_MINUTE`, and `ALLOWED_ORIGIN`. The plural fallback variable accepts a comma-separated model chain, while the singular variable remains compatible with older deployments. A fresh timeout is applied to every attempt inside the overall deadline, so a stalled primary cannot consume the fallback's time. Do not change these settings unless the deployment owner understands their effect.
 
 Upload the secrets without placing their values in a command or build log:
 
