@@ -367,18 +367,22 @@ class _MaterialCard extends StatelessWidget {
     final sizeLabel = _formatBytes(material.sizeBytes);
     final dateLabel = _formatDate(material.updatedAt);
 
-    // Only the meaningful pieces are joined, avoiding empty separators.
+    // Only useful public metadata is shown; the internal revision stays hidden.
     final details = <String>[
-      'Version ${material.version}',
       if (sizeLabel.isNotEmpty) sizeLabel,
       if (dateLabel.isNotEmpty) 'Updated $dateLabel',
     ].join(' - ');
+    final semanticDetails = <String>[
+      material.title,
+      'Approved PDF',
+      if (details.isNotEmpty) details,
+    ].join('. ');
 
     return Tooltip(
       message: 'Open ${material.title}',
       child: Semantics(
         button: true,
-        label: '${material.title}. Approved PDF. $details.',
+        label: '$semanticDetails.',
         hint: 'Opens the secure PDF viewer',
         child: Card(
           clipBehavior: Clip.antiAlias,
@@ -413,8 +417,10 @@ class _MaterialCard extends StatelessWidget {
                           ),
                           const SizedBox(height: 5),
                           const Text('Approved PDF'),
-                          const SizedBox(height: 3),
-                          Text(details),
+                          if (details.isNotEmpty) ...[
+                            const SizedBox(height: 3),
+                            Text(details),
+                          ],
                         ],
                       ),
                     ),

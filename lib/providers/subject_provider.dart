@@ -178,7 +178,7 @@ class SubjectRepository {
         .select()
         .eq('department_id', department.id)
         .eq('status', 'active')
-        .order('display_order');
+        .order('name');
     final subjects = _rows(response)
         .map((row) => StudySubject.fromSupabase(row, areaId: department.areaId))
         .where(

@@ -52,7 +52,6 @@ class SubjectFormValue {
     required this.studyLevel,
     required this.semester,
     required this.status,
-    required this.displayOrder,
   });
 
   // These fields map directly to the subjects table or creation RPC.
@@ -62,22 +61,16 @@ class SubjectFormValue {
   final String? studyLevel;
   final String? semester;
   final String status;
-  final int displayOrder;
 }
 
 // MaterialFormValue contains safe editable metadata and never contains PDF bytes.
 class MaterialFormValue {
-  // The constructor groups the three metadata fields.
-  const MaterialFormValue({
-    required this.title,
-    required this.summary,
-    required this.displayOrder,
-  });
+  // The constructor groups the Student-facing metadata fields.
+  const MaterialFormValue({required this.title, required this.summary});
 
   // These fields are displayed to Students beside the protected PDF.
   final String title;
   final String summary;
-  final int displayOrder;
 }
 
 // AcademicAreaFormPage adds or edits one top-level Academic Area.
@@ -345,7 +338,7 @@ class SubjectFormPage extends StatefulWidget {
   State<SubjectFormPage> createState() => _SubjectFormPageState();
 }
 
-// Subject state keeps the seven corrected Subject fields together.
+// Subject state keeps the Student-facing Subject fields together.
 class _SubjectFormPageState extends State<SubjectFormPage> {
   // This key validates the complete form before one database request starts.
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
@@ -356,7 +349,6 @@ class _SubjectFormPageState extends State<SubjectFormPage> {
   late final TextEditingController _descriptionController;
   late final TextEditingController _levelController;
   late final TextEditingController _semesterController;
-  late final TextEditingController _orderController;
   late String _status;
 
   // Prefill every field once for Edit, or start with honest blank values for Add.
@@ -379,9 +371,6 @@ class _SubjectFormPageState extends State<SubjectFormPage> {
     _semesterController = TextEditingController(
       text: row?['semester']?.toString() ?? '',
     );
-    _orderController = TextEditingController(
-      text: row?['display_order']?.toString() ?? '0',
-    );
     _status = _safeStatus(row?['status']);
   }
 
@@ -393,7 +382,6 @@ class _SubjectFormPageState extends State<SubjectFormPage> {
     _descriptionController.dispose();
     _levelController.dispose();
     _semesterController.dispose();
-    _orderController.dispose();
     super.dispose();
   }
 
@@ -412,7 +400,6 @@ class _SubjectFormPageState extends State<SubjectFormPage> {
         studyLevel: level.isEmpty ? null : level,
         semester: semester.isEmpty ? null : semester,
         status: _status,
-        displayOrder: int.parse(_orderController.text.trim()),
       ),
     );
   }
@@ -510,12 +497,11 @@ class _SubjectFormPageState extends State<SubjectFormPage> {
             ),
             const SizedBox(height: 12),
             _FormSection(
-              title: '3. Visibility and order',
+              title: '3. Visibility',
               description: 'Active subjects appear in the Student catalog.',
               children: <Widget>[
-                _StatusAndOrderControls(
+                _StatusControl(
                   status: _status,
-                  orderController: _orderController,
                   onStatusChanged: (value) => setState(() => _status = value),
                 ),
               ],
@@ -551,13 +537,12 @@ class MaterialFormPage extends StatefulWidget {
 
 // Material form state owns only safe text metadata.
 class _MaterialFormPageState extends State<MaterialFormPage> {
-  // One key validates title, summary, and order.
+  // One key validates title and summary.
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
 
   // Controllers are initialized from current metadata or the selected filename.
   late final TextEditingController _titleController;
   late final TextEditingController _summaryController;
-  late final TextEditingController _orderController;
 
   // Create clean defaults once.
   @override
@@ -574,9 +559,6 @@ class _MaterialFormPageState extends State<MaterialFormPage> {
     _summaryController = TextEditingController(
       text: widget.existing?['summary']?.toString() ?? '',
     );
-    _orderController = TextEditingController(
-      text: widget.existing?['display_order']?.toString() ?? '0',
-    );
   }
 
   // Dispose every local controller.
@@ -584,7 +566,6 @@ class _MaterialFormPageState extends State<MaterialFormPage> {
   void dispose() {
     _titleController.dispose();
     _summaryController.dispose();
-    _orderController.dispose();
     super.dispose();
   }
 
@@ -597,7 +578,6 @@ class _MaterialFormPageState extends State<MaterialFormPage> {
       MaterialFormValue(
         title: _titleController.text.trim(),
         summary: _summaryController.text.trim(),
-        displayOrder: int.parse(_orderController.text.trim()),
       ),
     );
   }
@@ -673,18 +653,6 @@ class _MaterialFormPageState extends State<MaterialFormPage> {
                     counterText: '',
                   ),
                   validator: (value) => _optionalMaximum(value, 1000),
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _orderController,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    signed: true,
-                  ),
-                  decoration: const InputDecoration(
-                    labelText: 'Display order',
-                    prefixIcon: Icon(Icons.format_list_numbered_rounded),
-                  ),
-                  validator: _orderValidator,
                 ),
               ],
             ),
@@ -842,20 +810,7 @@ class _StatusAndOrderControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _ResponsiveFieldRow(
-      first: DropdownButtonFormField<String>(
-        initialValue: status,
-        decoration: const InputDecoration(
-          labelText: 'Status',
-          prefixIcon: Icon(Icons.visibility_outlined),
-        ),
-        items: const <DropdownMenuItem<String>>[
-          DropdownMenuItem<String>(value: 'active', child: Text('Active')),
-          DropdownMenuItem<String>(value: 'inactive', child: Text('Inactive')),
-        ],
-        onChanged: (value) {
-          if (value != null) onStatusChanged(value);
-        },
-      ),
+      first: _StatusControl(status: status, onStatusChanged: onStatusChanged),
       second: TextFormField(
         controller: orderController,
         keyboardType: const TextInputType.numberWithOptions(signed: true),
@@ -865,6 +820,33 @@ class _StatusAndOrderControls extends StatelessWidget {
         ),
         validator: _orderValidator,
       ),
+    );
+  }
+}
+
+// Subject forms use Status by itself; Area and Department forms pair it with
+// their still-supported ordering control.
+class _StatusControl extends StatelessWidget {
+  const _StatusControl({required this.status, required this.onStatusChanged});
+
+  final String status;
+  final ValueChanged<String> onStatusChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return DropdownButtonFormField<String>(
+      initialValue: status,
+      decoration: const InputDecoration(
+        labelText: 'Status',
+        prefixIcon: Icon(Icons.visibility_outlined),
+      ),
+      items: const <DropdownMenuItem<String>>[
+        DropdownMenuItem<String>(value: 'active', child: Text('Active')),
+        DropdownMenuItem<String>(value: 'inactive', child: Text('Inactive')),
+      ],
+      onChanged: (value) {
+        if (value != null) onStatusChanged(value);
+      },
     );
   }
 }

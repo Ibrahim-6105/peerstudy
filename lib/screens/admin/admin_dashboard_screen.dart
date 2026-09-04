@@ -8,9 +8,11 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:peerstudy/models/community_attachment.dart';
+import 'package:peerstudy/models/subject.dart';
 import 'package:peerstudy/routes/app_routes.dart';
 import 'package:peerstudy/screens/admin/admin_form_pages.dart';
 import 'package:peerstudy/screens/admin/admin_resolution_note_dialog.dart';
+import 'package:peerstudy/screens/student/material_viewer_screen.dart';
 import 'package:peerstudy/services/auth_service.dart';
 import 'package:peerstudy/services/backend_api_service.dart';
 import 'package:peerstudy/services/supabase_service.dart';
@@ -178,6 +180,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
 
   // Read all small hierarchy tables and keep valid current selections.
   Future<void> _loadCatalog() async {
+    if (!mounted) return;
     // Show full progress only when no catalog has been drawn yet.
     setState(() {
       _isLoading = true;
@@ -198,7 +201,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
             .select()
             .order('display_order')
             .order('name'),
-        _client.from('subjects').select().order('display_order').order('name'),
+        _client.from('subjects').select().order('name'),
       ]);
 
       // Convert PostgREST dynamic data into predictable string-key maps.
@@ -266,8 +269,8 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
           .from('subject_materials')
           .select()
           .eq('subject_id', subjectId)
-          .order('display_order')
-          .order('created_at', ascending: false);
+          .order('created_at', ascending: false)
+          .order('title');
 
       // Ignore the result if selection changed during the request.
       if (!mounted || _subjectId != subjectId) return;
@@ -446,7 +449,6 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
               'p_description': input.description,
               'p_study_level': input.studyLevel,
               'p_semester': input.semester,
-              'p_display_order': input.displayOrder,
               'p_status': input.status,
             },
           );
@@ -459,7 +461,6 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
                 'description': input.description,
                 'study_level': input.studyLevel,
                 'semester': input.semester,
-                'display_order': input.displayOrder,
                 'status': input.status,
               })
               .eq('id', _id(existing));
@@ -471,7 +472,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     );
   }
 
-  // Confirm and delete one catalog row; foreign keys safely block unsafe deletes.
+  // Confirm and delete one Area/Department; dependent catalog rows stay guarded.
   Future<void> _deleteCatalogRow({
     required String table,
     required _Row row,
@@ -484,12 +485,35 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
           'Delete "${row['name']}"? Rows with dependent content are protected by the database.',
       confirmLabel: 'Delete',
     );
-    if (!confirmed) return;
+    if (!mounted || !confirmed) return;
 
     // Admin RLS and foreign keys make this mutation fail closed.
     await _runAdminWrite(
       () => _client.from(table).delete().eq('id', _id(row)),
       successMessage: '$label deleted.',
+    );
+  }
+
+  // Permanently delete one Subject together with its official learning files.
+  Future<void> _deleteSubject(_Row subject) async {
+    final name = subject['name']?.toString() ?? 'this Subject';
+    final confirmed = await _confirm(
+      title: 'Permanently delete Subject?',
+      message:
+          'Delete "$name" and all of its official PDFs? Generated quizzes and Student score/attempt history are preserved. The Subject and PDF records cannot be restored, and a Subject with Community posts stays protected.',
+      confirmLabel: 'Delete permanently',
+    );
+    if (!mounted || !confirmed) return;
+
+    await _runAdminWrite(
+      () async {
+        await _backend.deleteSubjectPermanently(
+          subjectId: _id(subject),
+          reason: 'Permanently deleted by Admin from Academic Content',
+        );
+      },
+      successMessage:
+          'Subject and PDFs deleted. Quiz and score history preserved.',
     );
   }
 
@@ -502,7 +526,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
       return;
     }
 
-    // Select one PDF and keep its bytes for the official signed-upload method.
+    // Select one PDF and keep its bytes for the authenticated Storage upload.
     final selection = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: const <String>['pdf'],
@@ -538,20 +562,19 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     });
 
     try {
-      // First create fail-closed uploading metadata and a signed private path.
+      // First create fail-closed uploading metadata and a private path.
       final session = await _backend.createMaterialUpload(
         subjectId: subjectId,
         title: details.title,
         summary: details.summary,
         fileName: file.name,
         sizeBytes: file.size,
-        displayOrder: details.displayOrder,
         materialId: replacing == null ? null : _id(replacing),
         expectedVersion: replacing?['version'] as int?,
       );
 
       // Then upload exact bytes and save their SHA-256 checksum.
-      await _backend.uploadSignedStream(
+      await _backend.uploadMaterialStream(
         session: session,
         bytes: Stream<List<int>>.value(file.bytes!),
         sizeBytes: file.size,
@@ -574,7 +597,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     }
   }
 
-  // Edit title, summary, and order without replacing verified PDF bytes.
+  // Edit title and summary without replacing verified PDF bytes.
   Future<void> _editMaterialMetadata(_Row material) async {
     // Edit safe metadata on the same full-page form without replacing bytes.
     final input = await Navigator.push<MaterialFormValue>(
@@ -595,30 +618,50 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
         expectedVersion: (material['version'] as num?)?.toInt() ?? 1,
         title: input.title,
         summary: input.summary,
-        displayOrder: input.displayOrder,
       );
     }, successMessage: 'Material details updated.');
   }
 
-  // Remove official PDF bytes and keep a removed audit metadata row.
+  // Permanently remove PDF bytes/metadata while retaining learning history.
   Future<void> _removeMaterial(_Row material) async {
-    // Confirm the exact title before deleting private Storage bytes.
+    // Confirm the full irreversible scope before preparing private byte cleanup.
     final confirmed = await _confirm(
-      title: 'Remove official PDF?',
+      title: 'Permanently delete PDF?',
       message:
-          'Remove "${material['title']}" from Student access and private Storage?',
-      confirmLabel: 'Remove',
+          'Delete "${material['title']}" from this Subject, private Storage, and the database? Generated quizzes and Student score/attempt history are preserved. The PDF itself cannot be restored.',
+      confirmLabel: 'Delete permanently',
     );
-    if (!confirmed) return;
+    if (!mounted || !confirmed) return;
 
-    // BackendApiService coordinates private byte removal and row status.
-    await _runAdminWrite(() async {
-      await _backend.archiveMaterial(
-        materialId: _id(material),
-        expectedVersion: (material['version'] as num?)?.toInt() ?? 1,
-        reason: 'Removed by Admin from Academic Content',
-      );
-    }, successMessage: 'Official PDF removed.');
+    // The backend makes Storage/database cleanup durable and safely retryable.
+    await _runAdminWrite(
+      () async {
+        await _backend.deleteMaterialPermanently(
+          materialId: _id(material),
+          expectedVersion: (material['version'] as num?)?.toInt() ?? 1,
+          reason: 'Permanently deleted by Admin from Academic Content',
+        );
+      },
+      successMessage: 'Official PDF deleted. Quiz and score history preserved.',
+    );
+  }
+
+  // Open an approved official PDF through the same verified viewer as Students.
+  void _openMaterial(_Row row) {
+    if (_isWorking || row['status']?.toString() != 'approved') {
+      _showMessage('Only an approved PDF can be opened.');
+      return;
+    }
+    final material = StudyMaterial.fromSupabase(row);
+    if (!material.isAvailable) {
+      _showMessage('This PDF record is incomplete. Replace it and try again.');
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => MaterialViewerScreen(material: material),
+      ),
+    );
   }
 
   // Run one Admin mutation with uniform progress, refresh, and error handling.
@@ -627,7 +670,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     required String successMessage,
   }) async {
     // Do not allow overlapping catalog mutations.
-    if (_isWorking) return;
+    if (!mounted || _isWorking) return;
     setState(() {
       _isWorking = true;
       _errorMessage = null;
@@ -655,6 +698,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
     required String message,
     required String confirmLabel,
   }) async {
+    if (!mounted) return false;
     // Null from a dismissed dialog is treated as cancel.
     return await showDialog<bool>(
           context: context,
@@ -678,6 +722,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
 
   // Show a short result at the bottom of the current tab.
   void _showMessage(String message) {
+    if (!mounted) return;
     // Replace an old snackbar so the latest operation is unambiguous.
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -791,11 +836,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
                         : () => _editSubject(existing: selectedSubject),
                     onDelete: _isWorking || selectedSubject == null
                         ? null
-                        : () => _deleteCatalogRow(
-                            table: 'subjects',
-                            row: selectedSubject,
-                            label: 'Subject',
-                          ),
+                        : () => _deleteSubject(selectedSubject),
                   ),
                   const SizedBox(height: 14),
                   // Material management belongs to the selected Subject.
@@ -803,6 +844,7 @@ class _AcademicContentTabState extends State<_AcademicContentTab> {
                     subject: selectedSubject,
                     materials: _materials,
                     isWorking: _isWorking,
+                    onOpen: _isWorking ? null : _openMaterial,
                     onUpload: selectedSubject == null || _isWorking
                         ? null
                         : () => _uploadMaterial(),
@@ -1302,6 +1344,7 @@ class _MaterialsCard extends StatelessWidget {
     required this.subject,
     required this.materials,
     required this.isWorking,
+    required this.onOpen,
     required this.onUpload,
     required this.onReplace,
     required this.onEdit,
@@ -1315,6 +1358,7 @@ class _MaterialsCard extends StatelessWidget {
 
   // Material callbacks are owned by the state above.
   final VoidCallback? onUpload;
+  final ValueChanged<_Row>? onOpen;
   final ValueChanged<_Row>? onReplace;
   final ValueChanged<_Row>? onEdit;
   final ValueChanged<_Row>? onRemove;
@@ -1367,26 +1411,45 @@ class _MaterialsCard extends StatelessWidget {
                     '${material['status'] ?? 'unknown'} - '
                     '${_formatBytes((material['size_bytes'] as num?)?.toInt() ?? 0)}',
                   ),
-                  trailing: PopupMenuButton<String>(
-                    enabled: !isWorking,
-                    tooltip: 'Material actions',
-                    onSelected: (action) {
-                      if (action == 'edit') onEdit?.call(material);
-                      if (action == 'replace') onReplace?.call(material);
-                      if (action == 'remove') onRemove?.call(material);
-                    },
-                    itemBuilder: (context) => const <PopupMenuEntry<String>>[
-                      PopupMenuItem<String>(
-                        value: 'edit',
-                        child: Text('Edit details'),
+                  onTap:
+                      !isWorking && material['status']?.toString() == 'approved'
+                      ? () => onOpen?.call(material)
+                      : null,
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      IconButton(
+                        tooltip: 'Open PDF',
+                        onPressed:
+                            !isWorking &&
+                                material['status']?.toString() == 'approved'
+                            ? () => onOpen?.call(material)
+                            : null,
+                        icon: const Icon(Icons.open_in_new_rounded),
                       ),
-                      PopupMenuItem<String>(
-                        value: 'replace',
-                        child: Text('Replace PDF'),
-                      ),
-                      PopupMenuItem<String>(
-                        value: 'remove',
-                        child: Text('Remove PDF'),
+                      PopupMenuButton<String>(
+                        enabled: !isWorking,
+                        tooltip: 'Material actions',
+                        onSelected: (action) {
+                          if (action == 'edit') onEdit?.call(material);
+                          if (action == 'replace') onReplace?.call(material);
+                          if (action == 'delete') onRemove?.call(material);
+                        },
+                        itemBuilder: (context) =>
+                            const <PopupMenuEntry<String>>[
+                              PopupMenuItem<String>(
+                                value: 'edit',
+                                child: Text('Edit details'),
+                              ),
+                              PopupMenuItem<String>(
+                                value: 'replace',
+                                child: Text('Replace PDF'),
+                              ),
+                              PopupMenuItem<String>(
+                                value: 'delete',
+                                child: Text('Delete PDF permanently'),
+                              ),
+                            ],
                       ),
                     ],
                   ),

@@ -189,7 +189,7 @@ class _MaterialSelectionView extends StatelessWidget {
                     title: Text(material.title),
                     subtitle: Text(
                       material.summary.trim().isEmpty
-                          ? 'Approved PDF - version ${material.version}'
+                          ? 'Approved PDF'
                           : material.summary,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,

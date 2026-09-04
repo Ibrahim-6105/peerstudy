@@ -1,7 +1,7 @@
 // Internal secure PDF viewer with scroll, zoom, and page controls.
 //
 // Beginner note:
-// PeerStudy requests a short-lived private URL only while this screen is open.
+// PeerStudy downloads approved bytes with the signed-in user's session.
 // The PDF library may use temporary memory/system cache while viewing, but this
 // app never creates a permanent material collection on the device.
 
@@ -30,13 +30,13 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
   // This controller supplies page navigation and zoom actions.
   final PdfViewerController _pdfController = PdfViewerController();
 
-  // The backend gateway signs approved private Storage paths.
+  // The backend gateway downloads and verifies approved private bytes.
   final BackendApiService _backend = BackendApiService();
 
   // Access exists only for the current screen session.
   MaterialAccess? _access;
 
-  // A new key rebuilds the PDF widget after a retry obtains a fresh URL.
+  // A new key rebuilds the PDF widget after a retry obtains fresh bytes.
   Key _viewerKey = UniqueKey();
 
   // Explicit loading and failure states avoid displaying stale bytes.
@@ -54,7 +54,7 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
     _openMaterial();
   }
 
-  // Request a fresh ten-minute signed URL for this approved material.
+  // Download and verify this approved material with the current account.
   Future<void> _openMaterial() async {
     // Reset the viewer state before the protected request.
     setState(() {
@@ -72,7 +72,7 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
       // Ignore a response after the user already closed the viewer.
       if (!mounted) return;
 
-      // Store temporary access only in this in-memory State object.
+      // Store verified bytes only in this in-memory State object.
       setState(() {
         _access = access;
         _viewerKey = UniqueKey();
@@ -128,7 +128,7 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
       return const LoadingView(message: 'Opening secure PDF...');
     }
 
-    // A failed request offers a fresh signed-access retry.
+    // A failed request offers a complete authenticated-download retry.
     if (_loadError != null) {
       return ErrorView(message: _loadError!, onRetry: _openMaterial);
     }
@@ -162,36 +162,23 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
         setState(() => _pageNumber = pageNumber);
       },
 
-      // Network range-download progress appears inside the viewer.
-      loadingBannerBuilder: (context, downloaded, total) {
-        final progress = total == null || total == 0
-            ? null
-            : downloaded / total;
-        return Center(
-          child: SizedBox.square(
-            dimension: 30,
-            child: CircularProgressIndicator(value: progress, strokeWidth: 2.5),
-          ),
-        );
-      },
-
-      // A damaged or expired document offers a complete signed-access retry.
+      // A damaged document offers a complete authenticated-download retry.
       errorBannerBuilder: (context, error, stackTrace, documentRef) {
         return ErrorView(
-          message: 'This PDF session expired or the file is damaged.',
+          message: 'This PDF is damaged or could not be rendered.',
           onRetry: _openMaterial,
         );
       },
     );
 
-    // Uri range access starts rendering without permanently saving the PDF.
-    return PdfViewer.uri(
-      access.signedUrl,
+    // Verified in-memory bytes avoid signed-URL/range-loading compatibility
+    // problems and are never added to a permanent download library.
+    return PdfViewer.data(
+      access.bytes,
+      sourceName: access.sourceName,
       key: _viewerKey,
       controller: _pdfController,
       params: params,
-      preferRangeAccess: true,
-      timeout: const Duration(seconds: 25),
     );
   }
 

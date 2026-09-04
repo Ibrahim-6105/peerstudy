@@ -4,6 +4,7 @@
 // Screens call clearly named methods here instead of repeating Supabase table,
 // Storage, RPC, and Edge Function details throughout the app.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -44,9 +45,13 @@ class BackendException implements Exception {
   String toString() => message;
 }
 
-// SignedUploadSession describes one short-lived private Storage upload.
+// SignedUploadSession is the legacy name for one private material upload.
+//
+// New sessions use the signed-in Supabase client for the actual Storage write,
+// so Storage RLS evaluates the Admin identity at upload time.  The old fields
+// remain available because older callers may still inspect them.
 class SignedUploadSession {
-  // The additional path and token let the official SDK upload binary data.
+  // Keep the original constructor shape source-compatible with older callers.
   const SignedUploadSession({
     required this.uploadId,
     required this.uploadUrl,
@@ -62,10 +67,10 @@ class SignedUploadSession {
   // For materials, uploadId is the pending subject_materials UUID.
   final String uploadId;
 
-  // Full signed URL is retained for transparent debugging and compatibility.
+  // This is the authenticated object endpoint for new material sessions.
   final Uri uploadUrl;
 
-  // Supabase signed uploads currently need no custom phone-supplied headers.
+  // The official SDK supplies authentication; callers add no custom headers.
   final Map<String, String> requiredHeaders;
 
   // The app refuses to reuse an obviously expired upload session.
@@ -80,7 +85,7 @@ class SignedUploadSession {
   // Private path inside the subject-materials bucket.
   final String? storagePath;
 
-  // One-time token used by uploadBinaryToSignedUrl.
+  // Legacy signed-upload sessions may still contain a one-time token.
   final String? uploadToken;
 
   // Bucket MIME validation allows only application/pdf for materials.
@@ -261,51 +266,92 @@ class BackendApiService {
     return Map<Object?, Object?>.unmodifiable(row);
   }
 
-  // Create a short-lived URL for one approved official PDF.
+  // Download and verify one approved official PDF with the current session.
   Future<MaterialAccess> requestMaterialAccess(String materialId) async {
     try {
       // RLS and this explicit filter both require an approved material.
       final row = await _client
           .from('subject_materials')
-          .select('id, storage_path, version, checksum, status, mime_type')
+          .select(
+            'id, subject_id, storage_path, version, checksum, status, mime_type, size_bytes',
+          )
           .eq('id', materialId)
           .eq('status', 'approved')
           .single();
 
-      // Refuse a non-PDF or incomplete row before signing its path.
+      // Refuse a non-PDF or incomplete row before downloading private bytes.
       final path = row['storage_path']?.toString() ?? '';
       final checksum = row['checksum']?.toString() ?? '';
       final mimeType = row['mime_type']?.toString() ?? '';
-      if (path.isEmpty || checksum.isEmpty || mimeType != 'application/pdf') {
+      final expectedSize = (row['size_bytes'] as num?)?.toInt() ?? 0;
+      if (!_isSafeStoragePath(path) ||
+          checksum.isEmpty ||
+          mimeType != 'application/pdf' ||
+          expectedSize <= 0 ||
+          expectedSize > 25 * 1024 * 1024) {
         throw const BackendException(
           'This material is not available as an approved PDF.',
           code: 'failed-precondition',
         );
       }
 
-      // Ten minutes is enough for the internal viewer to start its download.
-      const expiresInSeconds = 600;
-      final signedUrl = await _client.storage
+      // A normal authenticated download follows the same Storage SELECT policy
+      // for Students and Admins. It avoids signed-URL range requests, which can
+      // remain waiting in embedded PDF viewers on some devices.
+      final bytes = await _client.storage
           .from('subject-materials')
-          .createSignedUrl(path, expiresInSeconds);
+          .download(path, cacheNonce: checksum)
+          .timeout(const Duration(minutes: 2));
 
-      // Return the exact contract consumed by MaterialAccess.fromMap.
-      return MaterialAccess.fromMap(<Object?, Object?>{
-        'materialId': row['id']?.toString() ?? materialId,
-        'signedUrl': signedUrl,
-        'version': (row['version'] as num?)?.toInt() ?? 1,
-        'checksum': checksum,
-        'expiresAt': DateTime.now()
-            .toUtc()
-            .add(const Duration(seconds: expiresInSeconds))
-            .toIso8601String(),
-      });
+      // Never pass truncated, substituted, or non-PDF bytes to the renderer.
+      if (bytes.length != expectedSize ||
+          !_hasPdfSignature(bytes) ||
+          sha256.convert(bytes).toString().toLowerCase() !=
+              checksum.toLowerCase()) {
+        throw const BackendException(
+          'This PDF failed its integrity check. Ask an Admin to replace it.',
+          code: 'invalid-pdf',
+        );
+      }
+
+      return MaterialAccess(
+        materialId: row['id']?.toString() ?? materialId,
+        bytes: bytes,
+        version: (row['version'] as num?)?.toInt() ?? 1,
+        checksum: checksum,
+      );
     } on BackendException {
       rethrow;
+    } on TimeoutException {
+      throw const BackendException(
+        'The PDF download took too long. Check your connection and retry.',
+        code: 'download-timeout',
+      );
     } on StorageException catch (error) {
-      throw BackendException(error.message, code: 'storage-error');
+      final status = int.tryParse(error.statusCode ?? '');
+      if (status == 401 || status == 403) {
+        throw const BackendException(
+          'Your account cannot open this PDF. Sign in again and retry.',
+          code: 'permission-denied',
+        );
+      }
+      if (status == 404) {
+        throw const BackendException(
+          'This PDF file is missing. Ask an Admin to replace it.',
+          code: 'not-found',
+        );
+      }
+      throw const BackendException(
+        'The PDF could not be downloaded. Check your connection and retry.',
+        code: 'storage-error',
+      );
     } on PostgrestException catch (error) {
       throw _postgrestBackendException(error);
+    } catch (_) {
+      throw const BackendException(
+        'The PDF could not be opened. Check your connection and retry.',
+        code: 'network-error',
+      );
     }
   }
 
@@ -316,36 +362,43 @@ class BackendApiService {
     required String fileName,
     required int sizeBytes,
     String summary = '',
-    int displayOrder = 0,
     String? materialId,
     int? expectedVersion,
   }) async {
-    // Validate values before creating a database row or signed upload.
+    // Validate values before creating a database row or upload session.
     final user = _requireUser();
+    final cleanSubjectId = _requiredUuidArgument(subjectId, 'Subject');
     final cleanTitle = _requiredText(title, 'Material title');
     final cleanFileName = _safePdfFileName(fileName);
+    final isReplacement = materialId?.trim().isNotEmpty == true;
     if (sizeBytes <= 0 || sizeBytes > 25 * 1024 * 1024) {
       throw const BackendException(
         'Choose a PDF no larger than 25 MB.',
         code: 'invalid-file',
       );
     }
+    if (isReplacement && (expectedVersion == null || expectedVersion < 1)) {
+      throw const BackendException(
+        'Refresh this PDF before replacing it.',
+        code: 'invalid-argument',
+      );
+    }
 
     // Reuse the existing UUID for replacement or derive a fresh valid UUID.
-    final id = materialId?.trim().isNotEmpty == true
-        ? materialId!.trim()
+    final id = isReplacement
+        ? _requiredUuidArgument(materialId!, 'PDF')
         : _uuidFromText(
-            '${user.id}|$subjectId|$cleanFileName|${DateTime.now().microsecondsSinceEpoch}',
+            '${user.id}|$cleanSubjectId|$cleanFileName|${DateTime.now().microsecondsSinceEpoch}',
           );
 
     // A new unique path prevents a viewer from receiving stale replacement bytes.
     final storagePath =
-        '$subjectId/$id/${DateTime.now().toUtc().millisecondsSinceEpoch}_$cleanFileName';
+        '$cleanSubjectId/$id/${DateTime.now().toUtc().millisecondsSinceEpoch}_$cleanFileName';
 
     // Shared metadata is written before upload with fail-closed uploading status.
     final values = <String, dynamic>{
       'id': id,
-      'subject_id': subjectId,
+      'subject_id': cleanSubjectId,
       'uploaded_by': user.id,
       'title': cleanTitle,
       'summary': summary.trim(),
@@ -354,51 +407,85 @@ class BackendApiService {
       'size_bytes': sizeBytes,
       'checksum': null,
       'status': 'uploading',
-      'display_order': displayOrder,
       'approved_by': null,
       'approved_at': null,
     };
 
     try {
       // A replacement keeps its old private path until the new PDF is approved.
-      if (materialId != null && materialId.trim().isNotEmpty) {
+      if (isReplacement) {
         final current = await _client
             .from('subject_materials')
-            .select('storage_path')
+            .select('subject_id, storage_path, version')
             .eq('id', id)
-            .single();
+            .maybeSingle();
+        if (current == null) {
+          throw const BackendException(
+            'This PDF no longer exists. Refresh the material list.',
+            code: 'not-found',
+          );
+        }
+        if (current['subject_id']?.toString() != cleanSubjectId) {
+          throw const BackendException(
+            'This PDF does not belong to the selected Subject.',
+            code: 'failed-precondition',
+          );
+        }
+        final currentVersion = (current['version'] as num?)?.toInt();
+        if (currentVersion != expectedVersion) {
+          throw BackendException(
+            'This PDF changed on another Admin device. Refresh and try again.',
+            code: 'conflict',
+            currentVersion: currentVersion,
+          );
+        }
         final oldPath = current['storage_path']?.toString() ?? '';
-        if (oldPath.isNotEmpty && oldPath != storagePath) {
+        if (oldPath != storagePath &&
+            _isOwnedMaterialPath(
+              oldPath,
+              subjectId: cleanSubjectId,
+              materialId: id,
+            )) {
           _replacementOldPaths[id] = oldPath;
         }
       }
 
       // Admin-only RLS protects both the insert and replacement update.
-      if (materialId == null || materialId.trim().isEmpty) {
+      if (!isReplacement) {
         await _client.from('subject_materials').insert(values);
       } else {
         final updateValues = Map<String, dynamic>.from(values)..remove('id');
-        await _client
+        final updated = await _client
             .from('subject_materials')
             .update(updateValues)
-            .eq('id', id);
+            .eq('id', id)
+            .eq('version', expectedVersion!)
+            .select('id')
+            .maybeSingle();
+        if (updated == null || updated['id']?.toString() != id) {
+          _replacementOldPaths.remove(id);
+          throw const BackendException(
+            'This PDF changed on another Admin device. Refresh and try again.',
+            code: 'conflict',
+          );
+        }
       }
 
-      // Supabase creates a one-purpose private upload URL and token.
-      final signed = await _client.storage
-          .from('subject-materials')
-          .createSignedUploadUrl(storagePath, upsert: false);
-
-      // Signed upload tokens are intentionally treated as short-lived.
+      // Return the exact authenticated object endpoint.  No bearer-equivalent
+      // upload token is minted: uploadMaterialStream performs the write through
+      // the signed-in Storage client so the insert policy is checked then.
       return SignedUploadSession(
         uploadId: id,
-        uploadUrl: Uri.parse(signed.signedUrl),
+        uploadUrl: _storageObjectUri(
+          storageUrl: _client.storage.url,
+          bucket: 'subject-materials',
+          path: storagePath,
+        ),
         requiredHeaders: const <String, String>{},
-        expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 90)),
+        expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 30)),
         materialId: id,
         version: (expectedVersion ?? 0) + 1,
-        storagePath: signed.path,
-        uploadToken: signed.token,
+        storagePath: storagePath,
       );
     } on StorageException catch (error) {
       throw BackendException(error.message, code: 'storage-error');
@@ -407,8 +494,9 @@ class BackendApiService {
     }
   }
 
-  // Publish a material only after uploadSignedStream saved its checksum.
+  // Publish a material only after uploadMaterialStream saved its checksum.
   Future<Map<Object?, Object?>> finalizeMaterialUpload(String uploadId) async {
+    final cleanUploadId = _requiredUuidArgument(uploadId, 'PDF upload');
     try {
       // The approved constraint proves that checksum and approval fields exist.
       final row = await _client
@@ -418,19 +506,30 @@ class BackendApiService {
             'approved_by': _requireUser().id,
             'approved_at': DateTime.now().toUtc().toIso8601String(),
           })
-          .eq('id', uploadId)
+          .eq('id', cleanUploadId)
           .eq('status', 'uploading')
           .select()
-          .single();
+          .maybeSingle();
+      if (row == null) {
+        throw const BackendException(
+          'This PDF upload is no longer active. Refresh and try again.',
+          code: 'conflict',
+        );
+      }
 
       // Delete replacement bytes only after the new metadata is approved.
-      final oldPath = _replacementOldPaths.remove(uploadId);
-      if (oldPath != null && oldPath.isNotEmpty) {
+      final oldPath = _replacementOldPaths.remove(cleanUploadId) ?? '';
+      final subjectId = row['subject_id']?.toString() ?? '';
+      if (_isOwnedMaterialPath(
+        oldPath,
+        subjectId: subjectId,
+        materialId: cleanUploadId,
+      )) {
         try {
           await _client.storage.from('subject-materials').remove(<String>[
             oldPath,
           ]);
-        } on StorageException {
+        } catch (_) {
           // The old object remains private and unreferenced if cleanup retries
           // are needed; the newly approved material stays usable.
         }
@@ -449,7 +548,6 @@ class BackendApiService {
     required int expectedVersion,
     required String title,
     required String summary,
-    required int displayOrder,
   }) async {
     try {
       // PostgreSQL returns the updated row for an honest success message.
@@ -458,7 +556,6 @@ class BackendApiService {
           .update(<String, dynamic>{
             'title': _requiredText(title, 'Material title'),
             'summary': summary.trim(),
-            'display_order': displayOrder,
           })
           .eq('id', materialId)
           .select()
@@ -469,46 +566,313 @@ class BackendApiService {
     }
   }
 
-  // Remove official material from student access while keeping its audit row.
+  // Permanently delete one official PDF while preserving Quiz/score history.
+  //
+  // The database prepares a durable job before Storage is touched. If the app
+  // closes or the network drops, calling this method again resumes that job.
+  Future<Map<Object?, Object?>> deleteMaterialPermanently({
+    required String materialId,
+    required int expectedVersion,
+    required String reason,
+  }) async {
+    final cleanMaterialId = _requiredUuidArgument(materialId, 'PDF');
+    if (expectedVersion < 1) {
+      throw const BackendException(
+        'A valid PDF and version are required.',
+        code: 'invalid-argument',
+      );
+    }
+
+    // Prepare first: this immediately revokes Student access, retires linked
+    // Quizzes, freezes the path, and makes concurrent mutations fail closed.
+    final prepared =
+        await _rpcMap('admin_prepare_material_deletion', <String, Object?>{
+          'p_material_id': cleanMaterialId,
+          'p_expected_version': expectedVersion,
+          'p_reason': _requiredText(reason, 'Deletion reason'),
+        });
+
+    final outcome = _validatedRpcOutcome(
+      prepared,
+      allowed: const <String>{'prepared', 'completed', 'already_deleted'},
+      operation: 'PDF deletion',
+    );
+    _validateAllRpcIds(prepared, operation: 'PDF deletion');
+    _validateRpcId(
+      prepared,
+      key: 'material_id',
+      expected: cleanMaterialId,
+      operation: 'PDF deletion',
+    );
+    final dependencyCounts = _validatedOptionalCountMap(
+      prepared,
+      key: 'dependency_counts',
+      operation: 'PDF deletion',
+    );
+
+    if (outcome == 'already_deleted') {
+      final paths = _deletionStoragePaths(
+        prepared,
+        expectedMaterialId: cleanMaterialId,
+      );
+      if (paths.isNotEmpty) {
+        throw const BackendException(
+          'The server returned unexpected files for a deleted PDF.',
+          code: 'invalid-response',
+        );
+      }
+      _replacementOldPaths.remove(cleanMaterialId);
+      return prepared;
+    }
+
+    final jobId = _validateRpcId(
+      prepared,
+      key: 'job_id',
+      operation: 'PDF deletion',
+    );
+    final subjectId = _validateRpcId(
+      prepared,
+      key: 'subject_id',
+      operation: 'PDF deletion',
+    );
+    final paths = _deletionStoragePaths(
+      prepared,
+      expectedSubjectId: subjectId,
+      expectedMaterialId: cleanMaterialId,
+    );
+    if (paths.isEmpty ||
+        (dependencyCounts != null && dependencyCounts['materials'] != 1)) {
+      throw const BackendException(
+        'The server returned an inconsistent PDF deletion plan.',
+        code: 'invalid-response',
+      );
+    }
+
+    // This is the workflow's only Storage pass.  A missing object is already
+    // the desired state; any other failure leaves the prepared job retryable.
+    await _deletePrivateStorageObjects(
+      bucket: 'subject-materials',
+      paths: paths,
+      failureMessage:
+          'The PDF is hidden, but its private file could not be deleted. Check your connection and tap Delete again.',
+    );
+
+    // A completed job is a lost-response retry.  Its response was validated
+    // above and the one idempotent Storage pass has already completed.
+    if (outcome == 'completed') {
+      _replacementOldPaths.remove(cleanMaterialId);
+      return prepared;
+    }
+
+    // Finalization verifies Storage is absent, deletes only the Material row,
+    // and retires/detaches Quizzes without erasing Student attempt history.
+    final result = await _rpcMap(
+      'admin_finalize_material_deletion',
+      <String, Object?>{'p_job_id': jobId},
+    );
+    _validateDeletionFinalResult(
+      result,
+      expectedJobId: jobId,
+      targetKey: 'material_id',
+      expectedTargetId: cleanMaterialId,
+      primaryCountKey: 'deleted_materials',
+      operation: 'PDF deletion',
+    );
+    _replacementOldPaths.remove(cleanMaterialId);
+    return result;
+  }
+
+  // Permanently delete a Subject and PDFs while preserving Quiz/score history.
+  // Community Posts are intentionally protected by the backend and make this
+  // operation fail with a safe instruction to set the Subject inactive.
+  Future<Map<Object?, Object?>> deleteSubjectPermanently({
+    required String subjectId,
+    required String reason,
+  }) async {
+    final cleanSubjectId = _requiredUuidArgument(subjectId, 'Subject');
+
+    final prepared =
+        await _rpcMap('admin_prepare_subject_deletion', <String, Object?>{
+          'p_subject_id': cleanSubjectId,
+          'p_reason': _requiredText(reason, 'Deletion reason'),
+        });
+
+    final outcome = _validatedRpcOutcome(
+      prepared,
+      allowed: const <String>{'prepared', 'completed', 'already_deleted'},
+      operation: 'Subject deletion',
+    );
+    _validateAllRpcIds(prepared, operation: 'Subject deletion');
+    _validateRpcId(
+      prepared,
+      key: 'subject_id',
+      expected: cleanSubjectId,
+      operation: 'Subject deletion',
+    );
+    final dependencyCounts = _validatedOptionalCountMap(
+      prepared,
+      key: 'dependency_counts',
+      operation: 'Subject deletion',
+    );
+    final paths = _deletionStoragePaths(
+      prepared,
+      expectedSubjectId: cleanSubjectId,
+    );
+
+    if (outcome == 'already_deleted') {
+      if (paths.isNotEmpty) {
+        throw const BackendException(
+          'The server returned unexpected files for a deleted Subject.',
+          code: 'invalid-response',
+        );
+      }
+      return prepared;
+    }
+
+    final jobId = _validateRpcId(
+      prepared,
+      key: 'job_id',
+      operation: 'Subject deletion',
+    );
+    final materialCount = dependencyCounts?['materials'];
+    if (dependencyCounts != null &&
+        (materialCount == null ||
+            paths.length < materialCount ||
+            ((materialCount == 0) != paths.isEmpty))) {
+      throw const BackendException(
+        'The server returned an inconsistent Subject deletion plan.',
+        code: 'invalid-response',
+      );
+    }
+
+    // Delete every snapshotted object once before database finalization.
+    await _deletePrivateStorageObjects(
+      bucket: 'subject-materials',
+      paths: paths,
+      failureMessage:
+          'The Subject is hidden, but one or more private PDFs could not be deleted. Check your connection and tap Delete again.',
+    );
+
+    if (outcome == 'completed') {
+      final deletedPaths = paths.toSet();
+      _replacementOldPaths.removeWhere(
+        (_, path) => deletedPaths.contains(path),
+      );
+      return prepared;
+    }
+
+    final result = await _rpcMap(
+      'admin_finalize_subject_deletion',
+      <String, Object?>{'p_job_id': jobId},
+    );
+    _validateDeletionFinalResult(
+      result,
+      expectedJobId: jobId,
+      targetKey: 'subject_id',
+      expectedTargetId: cleanSubjectId,
+      primaryCountKey: 'deleted_subjects',
+      operation: 'Subject deletion',
+    );
+
+    // Forget replacement cleanup hints that belonged to the deleted paths.
+    final deletedPaths = paths.toSet();
+    _replacementOldPaths.removeWhere((_, path) => deletedPaths.contains(path));
+    return result;
+  }
+
+  // Hide one material while preserving its database, Quiz, and attempt rows.
+  //
+  // This retains the original archive contract for callers that do not want a
+  // hard delete.  Private bytes are cleaned up best-effort after access has
+  // already been revoked by the status update.
   Future<Map<Object?, Object?>> archiveMaterial({
     required String materialId,
     required int expectedVersion,
     required String reason,
   }) async {
+    final cleanMaterialId = _requiredUuidArgument(materialId, 'PDF');
+    final cleanReason = _requiredText(reason, 'Removal reason');
+    if (expectedVersion < 1) {
+      throw const BackendException(
+        'A valid PDF version is required.',
+        code: 'invalid-argument',
+      );
+    }
+
     try {
-      // Read the exact private object path before changing its row status.
       final current = await _client
           .from('subject_materials')
-          .select('storage_path')
-          .eq('id', materialId)
-          .single();
-      final path = current['storage_path']?.toString() ?? '';
-
-      // Mark the row removed before deleting bytes so a network failure can
-      // never leave an approved row pointing to a missing object.
-      final row = await _client
-          .from('subject_materials')
-          .update(<String, dynamic>{
-            'status': 'removed',
-            'removal_reason': reason.trim(),
-            'removed_at': DateTime.now().toUtc().toIso8601String(),
-          })
-          .eq('id', materialId)
           .select()
-          .single();
+          .eq('id', cleanMaterialId)
+          .maybeSingle();
+      if (current == null) {
+        throw const BackendException(
+          'This PDF no longer exists. Refresh the material list.',
+          code: 'not-found',
+        );
+      }
 
-      // Best-effort byte cleanup follows the authoritative access change.
-      if (path.isNotEmpty) {
+      final currentVersion = (current['version'] as num?)?.toInt();
+      if (currentVersion != expectedVersion) {
+        throw BackendException(
+          'This PDF changed on another Admin device. Refresh and try again.',
+          code: 'conflict',
+          currentVersion: currentVersion,
+        );
+      }
+
+      Map<String, dynamic> archived = Map<String, dynamic>.from(current);
+      if (current['status']?.toString() != 'removed') {
+        final updated = await _client
+            .from('subject_materials')
+            .update(<String, dynamic>{
+              'status': 'removed',
+              'removal_reason': cleanReason,
+              'removed_at': DateTime.now().toUtc().toIso8601String(),
+            })
+            .eq('id', cleanMaterialId)
+            .eq('version', expectedVersion)
+            .select()
+            .maybeSingle();
+        if (updated == null) {
+          throw const BackendException(
+            'This PDF changed on another Admin device. Refresh and try again.',
+            code: 'conflict',
+          );
+        }
+        archived = Map<String, dynamic>.from(updated);
+      }
+
+      final subjectId = archived['subject_id']?.toString() ?? '';
+      final paths = <String>{};
+      final currentPath = archived['storage_path']?.toString() ?? '';
+      if (_isOwnedMaterialPath(
+        currentPath,
+        subjectId: subjectId,
+        materialId: cleanMaterialId,
+      )) {
+        paths.add(currentPath);
+      }
+      final oldPath = _replacementOldPaths.remove(cleanMaterialId) ?? '';
+      if (_isOwnedMaterialPath(
+        oldPath,
+        subjectId: subjectId,
+        materialId: cleanMaterialId,
+      )) {
+        paths.add(oldPath);
+      }
+      for (final path in paths) {
         try {
           await _client.storage.from('subject-materials').remove(<String>[
             path,
           ]);
-        } on StorageException {
-          // The object remains private and no approved row can reference it.
-          // Repeating Remove later safely retries cleanup.
+        } catch (_) {
+          // Archiving remains successful: the object is private and its row is
+          // no longer readable by Students. A later cleanup can safely retry.
         }
       }
-      return Map<Object?, Object?>.unmodifiable(row);
+
+      return Map<Object?, Object?>.unmodifiable(archived);
     } on PostgrestException catch (error) {
       throw _postgrestBackendException(error);
     }
@@ -972,24 +1336,69 @@ class BackendApiService {
     int limit = 5,
   }) async {
     try {
-      // RLS limits rows to the current user; the UI receives no answer key.
-      var query = _client
-          .from('quiz_attempts')
-          .select('id, quiz_id, subject_id, score, total, completed_at')
-          .eq('student_id', _requireUser().id);
-      if (subjectId != null && subjectId.trim().isNotEmpty) {
-        query = query.eq('subject_id', subjectId.trim());
+      // Snapshot identity keeps history discoverable after a live Subject FK is
+      // detached during permanent catalog deletion.
+      final userId = _requireUser().id;
+      final rawSubjectId = subjectId?.trim() ?? '';
+      final cleanSubjectId = rawSubjectId.isEmpty
+          ? ''
+          : _requiredUuidArgument(rawSubjectId, 'Subject');
+      dynamic rows;
+      try {
+        var query = _client
+            .from('quiz_attempts')
+            .select(
+              'id, quiz_id, subject_id, subject_id_snapshot, score, total, completed_at',
+            )
+            .eq('student_id', userId);
+        if (cleanSubjectId.isNotEmpty) {
+          query = query.eq('subject_id_snapshot', cleanSubjectId);
+        }
+        rows = await query
+            .order('completed_at', ascending: false)
+            .limit(limit.clamp(1, 20));
+      } on PostgrestException catch (error) {
+        // During a rolling deployment, an older backend may not have the new
+        // snapshot column yet. Fall back only for that exact schema mismatch.
+        final missingSnapshot =
+            error.code == '42703' ||
+            error.message.toLowerCase().contains('subject_id_snapshot');
+        if (!missingSnapshot) rethrow;
+
+        var legacyQuery = _client
+            .from('quiz_attempts')
+            .select('id, quiz_id, subject_id, score, total, completed_at')
+            .eq('student_id', userId);
+        if (cleanSubjectId.isNotEmpty) {
+          legacyQuery = legacyQuery.eq('subject_id', cleanSubjectId);
+        }
+        rows = await legacyQuery
+            .order('completed_at', ascending: false)
+            .limit(limit.clamp(1, 20));
       }
-      final rows = await query
-          .order('completed_at', ascending: false)
-          .limit(limit.clamp(1, 20));
 
       // Map snake_case backend fields into the existing activity UI contract.
+      if (rows is! List) {
+        throw const BackendException(
+          'The server returned invalid quiz history.',
+          code: 'invalid-response',
+        );
+      }
       return rows
-          .map<Map<Object?, Object?>>((row) {
+          .map<Map<Object?, Object?>>((rawRow) {
+            if (rawRow is! Map) {
+              throw const BackendException(
+                'The server returned invalid quiz history.',
+                code: 'invalid-response',
+              );
+            }
+            final row = rawRow;
             return <Object?, Object?>{
               'attemptId': row['id']?.toString() ?? '',
-              'subjectId': row['subject_id']?.toString() ?? '',
+              'subjectId':
+                  row['subject_id_snapshot']?.toString() ??
+                  row['subject_id']?.toString() ??
+                  '',
               'score': row['score'],
               'total': row['total'],
               'submittedAt': row['completed_at']?.toString() ?? '',
@@ -1131,24 +1540,39 @@ class BackendApiService {
     );
   }
 
-  // Upload binary material bytes through the official signed-upload SDK method.
-  Future<void> uploadSignedStream({
+  // Upload material bytes with the current Supabase session attached.
+  //
+  // Unlike an upload token, this request reaches Storage as the signed-in
+  // Admin, so the subject-materials INSERT policy is evaluated at write time.
+  Future<void> uploadMaterialStream({
     required SignedUploadSession session,
     required Stream<List<int>> bytes,
     required int sizeBytes,
     SignedUploadProgress? onProgress,
   }) async {
-    // Refuse an expired, incomplete, or non-material session.
+    // Refuse an expired, incomplete, or incorrectly scoped material session.
+    _requireUser();
     final path = session.storagePath;
-    final token = session.uploadToken;
     if (sizeBytes <= 0 ||
+        sizeBytes > 25 * 1024 * 1024 ||
         session.expiresAt.isBefore(DateTime.now()) ||
         path == null ||
-        path.isEmpty ||
-        token == null ||
-        token.isEmpty) {
+        !_isSafeStoragePath(path)) {
       throw const BackendException(
         'The upload session is invalid or expired. Select the PDF again.',
+        code: 'failed-precondition',
+      );
+    }
+    final pathSegments = path.split('/');
+    final materialId = session.materialId ?? session.uploadId;
+    if (pathSegments.length != 3 ||
+        !_isUuid(pathSegments[0]) ||
+        pathSegments[1] != materialId ||
+        !_isUuid(materialId) ||
+        !pathSegments.last.toLowerCase().endsWith('.pdf') ||
+        session.mimeType != 'application/pdf') {
+      throw const BackendException(
+        'The upload session does not match this PDF.',
         code: 'failed-precondition',
       );
     }
@@ -1177,31 +1601,59 @@ class BackendApiService {
         );
       }
 
-      // Upload through the token created specifically for this private path.
+      // The normal authenticated upload includes the current access token.
+      // Storage RLS therefore re-checks the uploading row and Admin identity.
       final data = builder.takeBytes();
+      if (!_hasPdfSignature(data)) {
+        throw const BackendException(
+          'The selected file is not a readable PDF.',
+          code: 'invalid-file',
+        );
+      }
       await _client.storage
           .from('subject-materials')
-          .uploadBinaryToSignedUrl(
+          .uploadBinary(
             path,
-            token,
             data,
-            FileOptions(contentType: session.mimeType, upsert: false),
+            fileOptions: FileOptions(
+              contentType: session.mimeType,
+              upsert: false,
+            ),
           );
 
       // Save a deterministic checksum before the approved constraint is applied.
       final checksum = sha256.convert(data).toString();
-      await _client
+      final updated = await _client
           .from('subject_materials')
           .update(<String, dynamic>{
             'checksum': checksum,
             'size_bytes': data.length,
           })
-          .eq('id', session.materialId ?? session.uploadId)
-          .eq('status', 'uploading');
+          .eq('id', materialId)
+          .eq('storage_path', path)
+          .eq('status', 'uploading')
+          .select('id')
+          .maybeSingle();
+      if (updated == null || updated['id']?.toString() != materialId) {
+        throw const BackendException(
+          'This PDF upload is no longer active. Refresh and try again.',
+          code: 'conflict',
+        );
+      }
     } on BackendException {
       rethrow;
     } on StorageException catch (error) {
-      throw BackendException(error.message, code: 'upload-failed');
+      final status = int.tryParse(error.statusCode ?? '');
+      if (status == 401 || status == 403) {
+        throw const BackendException(
+          'Your Admin session cannot upload this PDF. Sign in again or refresh.',
+          code: 'permission-denied',
+        );
+      }
+      throw const BackendException(
+        'The secure PDF upload failed. Check your connection and try again.',
+        code: 'upload-failed',
+      );
     } on PostgrestException catch (error) {
       throw _postgrestBackendException(error);
     } catch (_) {
@@ -1210,6 +1662,23 @@ class BackendApiService {
         code: 'upload-failed',
       );
     }
+  }
+
+  // Keep the original method name working while callers migrate to the name
+  // that accurately describes the authenticated upload.
+  @Deprecated('Use uploadMaterialStream instead.')
+  Future<void> uploadSignedStream({
+    required SignedUploadSession session,
+    required Stream<List<int>> bytes,
+    required int sizeBytes,
+    SignedUploadProgress? onProgress,
+  }) {
+    return uploadMaterialStream(
+      session: session,
+      bytes: bytes,
+      sizeBytes: sizeBytes,
+      onProgress: onProgress,
+    );
   }
 
   // Call a PostgreSQL function and normalize its JSON/scalar response to a map.
@@ -1264,6 +1733,38 @@ class BackendApiService {
         'The AI quiz service is temporarily unavailable. Check your connection and retry.',
         code: 'network-error',
       );
+    }
+  }
+
+  // Delete bounded batches through the official Storage API.  A thrown error
+  // leaves the durable database job prepared, so the same Admin action retries
+  // safely instead of pretending the PDF was fully removed.
+  Future<void> _deletePrivateStorageObjects({
+    required String bucket,
+    required List<String> paths,
+    required String failureMessage,
+  }) async {
+    const batchSize = 100;
+    try {
+      for (var start = 0; start < paths.length; start += batchSize) {
+        final end = (start + batchSize).clamp(0, paths.length);
+        try {
+          await _client.storage.from(bucket).remove(paths.sublist(start, end));
+        } on StorageException catch (error) {
+          // DELETE is idempotent. A 404 means every requested object in this
+          // batch is already absent, which is the required final state.
+          if (_isMissingStorageObject(error)) continue;
+          throw BackendException(
+            failureMessage,
+            code: 'storage-delete-failed',
+            httpStatus: int.tryParse(error.statusCode ?? ''),
+          );
+        }
+      }
+    } on BackendException {
+      rethrow;
+    } catch (_) {
+      throw BackendException(failureMessage, code: 'network-error');
     }
   }
 
@@ -1396,6 +1897,266 @@ Map<Object?, Object?> _normalizeMapResponse(dynamic data) {
   );
 }
 
+// Validate the private object paths returned by a catalog-deletion RPC.
+List<String> _deletionStoragePaths(
+  Map<Object?, Object?> response, {
+  String? expectedSubjectId,
+  String? expectedMaterialId,
+}) {
+  final rawPaths = response['storage_paths'];
+  if (rawPaths is! List) {
+    throw const BackendException(
+      'The server returned invalid PDF deletion paths.',
+      code: 'invalid-response',
+    );
+  }
+
+  final paths = <String>[];
+  final seen = <String>{};
+  for (final value in rawPaths) {
+    if (value is! String || !_isSafeStoragePath(value)) {
+      throw const BackendException(
+        'The server returned an unsafe PDF deletion path.',
+        code: 'invalid-response',
+      );
+    }
+    final segments = value.split('/');
+    final belongsToSubject =
+        expectedSubjectId == null ||
+        (segments.length >= 3 && segments.first == expectedSubjectId);
+    final belongsToMaterial =
+        expectedMaterialId == null ||
+        (segments.length >= 3 && segments[1] == expectedMaterialId);
+    if (!belongsToSubject || !belongsToMaterial || !seen.add(value)) {
+      throw const BackendException(
+        'The server returned a PDF path outside the deletion target.',
+        code: 'invalid-response',
+      );
+    }
+    paths.add(value);
+  }
+  return List<String>.unmodifiable(paths);
+}
+
+// Accept only the path grammar produced by createMaterialUpload.
+bool _isSafeStoragePath(String path) {
+  if (path.isEmpty ||
+      path.length > 1000 ||
+      path != path.trim() ||
+      path.startsWith('/') ||
+      path.endsWith('/') ||
+      path.contains('..') ||
+      path.contains('\\')) {
+    return false;
+  }
+
+  final safeSegment = RegExp(r'^[A-Za-z0-9._-]+$');
+  final segments = path.split('/');
+  if (segments.length != 3 ||
+      !_isUuid(segments[0]) ||
+      !_isUuid(segments[1]) ||
+      !segments[2].toLowerCase().endsWith('.pdf') ||
+      segments.any(
+        (segment) =>
+            segment.isEmpty ||
+            segment == '.' ||
+            segment == '..' ||
+            !safeSegment.hasMatch(segment),
+      )) {
+    return false;
+  }
+  return true;
+}
+
+bool _isOwnedMaterialPath(
+  String path, {
+  required String subjectId,
+  required String materialId,
+}) {
+  if (!_isSafeStoragePath(path)) return false;
+  final segments = path.split('/');
+  return segments[0] == subjectId && segments[1] == materialId;
+}
+
+// Validate an RPC outcome instead of treating an unknown server state as done.
+String _validatedRpcOutcome(
+  Map<Object?, Object?> response, {
+  required Set<String> allowed,
+  required String operation,
+}) {
+  final raw = response['outcome'];
+  final outcome = raw is String ? raw.trim() : '';
+  if (outcome.isEmpty || outcome != raw || !allowed.contains(outcome)) {
+    throw BackendException(
+      'The server returned an invalid $operation outcome.',
+      code: 'invalid-response',
+    );
+  }
+  return outcome;
+}
+
+// Require a canonical UUID and optionally bind it to the requested target.
+String _validateRpcId(
+  Map<Object?, Object?> response, {
+  required String key,
+  required String operation,
+  String? expected,
+}) {
+  final raw = response[key];
+  final id = raw is String ? raw : '';
+  if (!_isUuid(id) || (expected != null && id != expected)) {
+    throw BackendException(
+      'The server returned an invalid $operation identifier.',
+      code: 'invalid-response',
+    );
+  }
+  return id;
+}
+
+// Every returned dependency count must be a real non-negative integer.
+Map<String, int>? _validatedOptionalCountMap(
+  Map<Object?, Object?> response, {
+  required String key,
+  required String operation,
+}) {
+  final raw = response[key];
+  if (raw == null) return null;
+  if (raw is! Map) {
+    throw BackendException(
+      'The server returned invalid $operation counts.',
+      code: 'invalid-response',
+    );
+  }
+
+  final counts = <String, int>{};
+  for (final entry in raw.entries) {
+    final name = entry.key;
+    final count = _nonnegativeInteger(entry.value);
+    if (name is! String || name.trim().isEmpty || count == null) {
+      throw BackendException(
+        'The server returned invalid $operation counts.',
+        code: 'invalid-response',
+      );
+    }
+    counts[name] = count;
+  }
+  return Map<String, int>.unmodifiable(counts);
+}
+
+// Validate the finalizer contract before announcing an irreversible success.
+void _validateDeletionFinalResult(
+  Map<Object?, Object?> response, {
+  required String expectedJobId,
+  required String targetKey,
+  required String expectedTargetId,
+  required String primaryCountKey,
+  required String operation,
+}) {
+  final outcome = _validatedRpcOutcome(
+    response,
+    allowed: const <String>{'deleted', 'already_deleted'},
+    operation: operation,
+  );
+  _validateAllRpcIds(response, operation: operation);
+  _validateRpcId(
+    response,
+    key: 'job_id',
+    expected: expectedJobId,
+    operation: operation,
+  );
+  _validateRpcId(
+    response,
+    key: targetKey,
+    expected: expectedTargetId,
+    operation: operation,
+  );
+
+  for (final entry in response.entries) {
+    final key = entry.key;
+    if (key is String &&
+        (key.startsWith('deleted_') ||
+            key.startsWith('retired_') ||
+            key.startsWith('preserved_') ||
+            key.endsWith('_count')) &&
+        _nonnegativeInteger(entry.value) == null) {
+      throw BackendException(
+        'The server returned invalid $operation counts.',
+        code: 'invalid-response',
+      );
+    }
+  }
+
+  // A server running an obsolete destructive finalizer must never be reported
+  // as the history-preserving success promised by the Admin confirmation.
+  for (final key in const <String>{
+    'deleted_quizzes',
+    'deleted_quiz_attempts',
+    'deleted_attempts',
+    'deleted_scores',
+  }) {
+    final count = _nonnegativeInteger(response[key]);
+    if (response.containsKey(key) && count != 0) {
+      throw BackendException(
+        'The server did not preserve Quiz and score history during $operation.',
+        code: 'invalid-response',
+      );
+    }
+  }
+
+  final primaryCount = _nonnegativeInteger(response[primaryCountKey]);
+  if ((outcome == 'deleted' && primaryCount != 1) ||
+      (outcome == 'already_deleted' &&
+          response.containsKey(primaryCountKey) &&
+          primaryCount != 0)) {
+    throw BackendException(
+      'The server did not confirm the completed $operation.',
+      code: 'invalid-response',
+    );
+  }
+}
+
+void _validateAllRpcIds(
+  Map<Object?, Object?> response, {
+  required String operation,
+}) {
+  for (final entry in response.entries) {
+    final key = entry.key;
+    if (key is String &&
+        key.endsWith('_id') &&
+        (entry.value is! String || !_isUuid(entry.value as String))) {
+      throw BackendException(
+        'The server returned an invalid $operation identifier.',
+        code: 'invalid-response',
+      );
+    }
+  }
+}
+
+int? _nonnegativeInteger(Object? value) {
+  if (value is! num || !value.isFinite || value < 0 || value != value.round()) {
+    return null;
+  }
+  return value.toInt();
+}
+
+bool _isMissingStorageObject(StorageException error) {
+  if (error.statusCode == '404') return true;
+  final details = '${error.error ?? ''} ${error.message}'.toLowerCase();
+  return details.contains('object not found') ||
+      details.contains('not_found') ||
+      details.contains('no such object');
+}
+
+// PDF permits a small binary preamble, so inspect its first 1024 bytes rather
+// than assuming the signature is at byte zero.
+bool _hasPdfSignature(Uint8List bytes) {
+  if (bytes.length < 5) return false;
+  final headerLength = bytes.length < 1024 ? bytes.length : 1024;
+  return latin1
+      .decode(bytes.sublist(0, headerLength), allowInvalid: true)
+      .contains('%PDF-');
+}
+
 // Convert an object-keyed RPC response into a normal string-keyed model map.
 Map<String, dynamic> _stringKeyedMap(Map<Object?, Object?> data) {
   return <String, dynamic>{
@@ -1451,13 +2212,24 @@ String _requiredText(String value, String label) {
 }
 
 // Convert an arbitrary stable request string into a deterministic UUID.
+final RegExp _uuidPattern = RegExp(
+  r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+);
+
+bool _isUuid(String value) => _uuidPattern.hasMatch(value);
+
+String _requiredUuidArgument(String value, String label) {
+  final clean = value.trim().toLowerCase();
+  if (!_isUuid(clean)) {
+    throw BackendException('Choose a valid $label.', code: 'invalid-argument');
+  }
+  return clean;
+}
+
 String _uuidFromText(String value) {
   // Preserve an already valid UUID so callers can inspect database idempotency.
   final clean = value.trim().toLowerCase();
-  final uuidPattern = RegExp(
-    r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
-  );
-  if (uuidPattern.hasMatch(clean)) return clean;
+  if (_isUuid(clean)) return clean;
 
   // SHA-256 makes exact retries produce the exact same 128-bit identifier.
   final bytes = sha256.convert(utf8.encode(value)).bytes.take(16).toList();
@@ -1475,19 +2247,52 @@ String _uuidFromText(String value) {
       '${hex.substring(20, 32)}';
 }
 
+// Build a displayable authenticated endpoint without exposing an access token.
+Uri _storageObjectUri({
+  required String storageUrl,
+  required String bucket,
+  required String path,
+}) {
+  final root = Uri.tryParse(storageUrl);
+  if (root == null || !root.hasScheme || root.host.isEmpty) {
+    throw const BackendException(
+      'The Storage service is not configured correctly.',
+      code: 'failed-precondition',
+    );
+  }
+  final base = storageUrl.endsWith('/')
+      ? storageUrl.substring(0, storageUrl.length - 1)
+      : storageUrl;
+  final encodedPath = path.split('/').map(Uri.encodeComponent).join('/');
+  return Uri.parse('$base/object/${Uri.encodeComponent(bucket)}/$encodedPath');
+}
+
 // Keep only a safe PDF file name for private Storage paths.
 String _safePdfFileName(String value) {
   // Remove directories and replace unsupported characters with underscores.
   final fileName = value.replaceAll('\\', '/').split('/').last.trim();
-  final safe = fileName.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+  final sanitized = fileName.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
 
   // The Admin material tool accepts PDFs only.
-  if (safe.isEmpty || !safe.toLowerCase().endsWith('.pdf')) {
+  if (!sanitized.toLowerCase().endsWith('.pdf')) {
     throw const BackendException(
       'Choose a valid PDF file.',
       code: 'invalid-file',
     );
   }
+
+  // Keep the extension while normalizing repeated dots rejected by the
+  // subject_materials storage_path database constraint.
+  final stem = sanitized
+      .substring(0, sanitized.length - 4)
+      .replaceAll(RegExp(r'[.]{2,}'), '_');
+  if (stem.isEmpty || stem == '.') {
+    throw const BackendException(
+      'Choose a valid PDF file.',
+      code: 'invalid-file',
+    );
+  }
+  final safe = '$stem.pdf';
   return safe;
 }
 

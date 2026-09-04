@@ -71,12 +71,24 @@ Deno.serve(async (request) => {
     if (!quiz || quiz.created_by !== user.id || quiz.status !== "ready") {
       throw new ApiError(404, "The Quiz is unavailable.", "quiz-unavailable");
     }
-    await requireActiveSubject(service, quiz.subject_id);
+    if (
+      typeof quiz.subject_id !== "string" ||
+      typeof quiz.material_id !== "string"
+    ) {
+      throw new ApiError(
+        409,
+        "This Quiz was retired because its source PDF is no longer available.",
+        "quiz-retired",
+      );
+    }
+    const quizSubjectId = requireUuid(quiz.subject_id, "quiz.subject_id");
+    const quizMaterialId = requireUuid(quiz.material_id, "quiz.material_id");
+    await requireActiveSubject(service, quizSubjectId);
 
     const { data: material, error: materialError } = await service
       .from("subject_materials")
       .select("id, status")
-      .eq("id", quiz.material_id)
+      .eq("id", quizMaterialId)
       .maybeSingle();
     if (materialError || !material || material.status !== "approved") {
       throw new ApiError(
@@ -149,7 +161,7 @@ Deno.serve(async (request) => {
       .from("quiz_attempts")
       .insert({
         quiz_id: quizId,
-        subject_id: quiz.subject_id,
+        subject_id: quizSubjectId,
         student_id: user.id,
         answers,
         score: scored.score,

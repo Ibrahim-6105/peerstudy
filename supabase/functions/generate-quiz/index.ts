@@ -49,7 +49,7 @@ Deno.serve(async (request) => {
     // Replaying the same completed request is cheap and never calls AI twice.
     const { data: existing, error: existingError } = await service
       .from("quizzes")
-      .select("id, subject_id, material_id, title, questions")
+      .select("id, subject_id, material_id, title, questions, status")
       .eq("created_by", user.id)
       .eq("idempotency_key", idempotencyKey)
       .maybeSingle();
@@ -61,6 +61,13 @@ Deno.serve(async (request) => {
       );
     }
     if (existing) {
+      if (existing.status !== "ready") {
+        throw new ApiError(
+          409,
+          "This Quiz was retired because its source PDF is no longer available.",
+          "quiz-retired",
+        );
+      }
       if (
         existing.subject_id !== subjectId || existing.material_id !== materialId
       ) {
@@ -70,9 +77,11 @@ Deno.serve(async (request) => {
           "idempotency-conflict",
         );
       }
-      return jsonResponse(request, quizPayload(existing), 200);
     }
 
+    // Validate the live Subject and PDF even for an idempotent replay. A
+    // previously generated Quiz may have been retired and detached by an
+    // Admin's permanent catalog deletion.
     await requireActiveSubject(service, subjectId);
     const { data: material, error: materialError } = await service
       .from("subject_materials")
@@ -88,6 +97,7 @@ Deno.serve(async (request) => {
         "material-check-failed",
       );
     }
+
     if (
       !material || material.subject_id !== subjectId ||
       material.status !== "approved" ||
@@ -99,6 +109,10 @@ Deno.serve(async (request) => {
         "The approved PDF is unavailable.",
         "material-unavailable",
       );
+    }
+
+    if (existing) {
+      return jsonResponse(request, quizPayload(existing), 200);
     }
 
     // Limit completed generations per Student. Idempotent replay was checked
@@ -189,7 +203,7 @@ Deno.serve(async (request) => {
     const { data: inserted, error: insertError } = await service
       .from("quizzes")
       .insert(insertPayload)
-      .select("id, subject_id, material_id, title, questions")
+      .select("id, subject_id, material_id, title, questions, status")
       .single();
 
     if (!insertError && inserted) {
@@ -206,13 +220,26 @@ Deno.serve(async (request) => {
     // A concurrent request with the same key may win the unique constraint.
     const { data: raced, error: racedError } = await service
       .from("quizzes")
-      .select("id, subject_id, material_id, title, questions")
+      .select("id, subject_id, material_id, title, questions, status")
       .eq("created_by", user.id)
       .eq("idempotency_key", idempotencyKey)
       .maybeSingle();
+    if (racedError || !raced) {
+      throw new ApiError(
+        409,
+        "idempotency_key conflicts with another request.",
+        "idempotency-conflict",
+      );
+    }
+    if (raced.status !== "ready") {
+      throw new ApiError(
+        409,
+        "This Quiz was retired because its source PDF is no longer available.",
+        "quiz-retired",
+      );
+    }
     if (
-      racedError || !raced || raced.subject_id !== subjectId ||
-      raced.material_id !== materialId
+      raced.subject_id !== subjectId || raced.material_id !== materialId
     ) {
       throw new ApiError(
         409,

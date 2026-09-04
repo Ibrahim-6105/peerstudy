@@ -4,6 +4,8 @@
 // A model gives one Supabase database row clear Dart field names. PeerStudy's
 // complete path is School -> Academic Area -> Department -> Subject.
 
+import 'dart:typed_data';
+
 // The corrected master limits the first release to this one school.
 const String peerStudySchoolName = 'School of Technology and Engineering';
 
@@ -168,7 +170,6 @@ class StudySubject {
     required this.name,
     required this.description,
     required this.status,
-    required this.displayOrder,
   });
 
   final String id;
@@ -181,7 +182,6 @@ class StudySubject {
   final String name;
   final String description;
   final String status;
-  final int displayOrder;
 
   bool get isAvailable =>
       id.trim().isNotEmpty &&
@@ -203,7 +203,6 @@ class StudySubject {
       name: _text(row['name'], fallback: 'Unnamed subject'),
       description: _text(row['description']),
       status: _rowStatus(row),
-      displayOrder: _integer(row['display_order']),
     );
   }
 }
@@ -220,7 +219,6 @@ class StudyMaterial {
     required this.mimeType,
     required this.sizeBytes,
     required this.checksum,
-    required this.displayOrder,
     required this.updatedAt,
     this.summary = '',
     this.uploadedBy,
@@ -236,7 +234,6 @@ class StudyMaterial {
   final String mimeType;
   final int sizeBytes;
   final String checksum;
-  final int displayOrder;
   final DateTime updatedAt;
   final String? uploadedBy;
 
@@ -263,38 +260,41 @@ class StudyMaterial {
       ).toLowerCase(),
       sizeBytes: _integer(row['size_bytes']),
       checksum: _text(row['checksum']),
-      displayOrder: _integer(row['display_order']),
       updatedAt: _dateTime(row['updated_at'] ?? row['created_at']),
       uploadedBy: uploadedBy.isEmpty ? null : uploadedBy,
     );
   }
 }
 
-// A short-lived material URL returned by the trusted backend.
+// Verified bytes for one approved material returned by the trusted backend.
 class MaterialAccess {
   const MaterialAccess({
     required this.materialId,
-    required this.signedUrl,
+    required this.bytes,
     required this.version,
     required this.checksum,
-    required this.expiresAt,
   });
 
   final String materialId;
-  final Uri signedUrl;
+  final Uint8List bytes;
   final int version;
   final String checksum;
-  final DateTime expiresAt;
+
+  // pdfrx uses this stable private identifier only for its temporary cache.
+  String get sourceName => '$materialId-$version-$checksum.pdf';
 
   factory MaterialAccess.fromMap(Map<Object?, Object?> data) {
+    final rawBytes = data['bytes'];
+    final bytes = switch (rawBytes) {
+      Uint8List value => value,
+      List<int> value => Uint8List.fromList(value),
+      _ => Uint8List(0),
+    };
     return MaterialAccess(
       materialId: _objectText(data['materialId'] ?? data['material_id']),
-      signedUrl: Uri.parse(
-        _objectText(data['signedUrl'] ?? data['signed_url']),
-      ),
+      bytes: bytes,
       version: _objectInteger(data['version']),
       checksum: _objectText(data['checksum']),
-      expiresAt: _objectDateTime(data['expiresAt'] ?? data['expires_at']),
     );
   }
 }
@@ -324,7 +324,3 @@ DateTime _dateTime(Object? value) {
 String _objectText(Object? value) => _text(value);
 
 int _objectInteger(Object? value) => _integer(value);
-
-DateTime _objectDateTime(Object? value) {
-  return DateTime.tryParse(value?.toString() ?? '') ?? DateTime.now();
-}

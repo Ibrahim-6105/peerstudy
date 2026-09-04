@@ -339,7 +339,6 @@ const _subject = StudySubject(
   name: 'Data Structures',
   description: 'The revised FYP acceptance subject.',
   status: 'active',
-  displayOrder: 1,
 );
 
 final _recentActivity = StudentRecentActivity(
