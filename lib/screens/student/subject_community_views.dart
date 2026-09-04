@@ -222,6 +222,8 @@ class _PostCardState extends State<_PostCard> {
       <CommunityAttachmentDraft>[];
   int _uploadedCommentAttachmentCount = 0;
   bool _isCommenting = false;
+  bool _isEditingPost = false;
+  final Set<String> _editingCommentIds = <String>{};
   String? _commentUploadMessage;
   String? _pendingCommentBody;
   String? _pendingCommentIdempotencyKey;
@@ -386,23 +388,40 @@ class _PostCardState extends State<_PostCard> {
 
   // Lets an owner revise the text of their own Community post.
   Future<void> _editOwnPost() async {
-    final editedBody = await _requestEditedText(
-      title: 'Edit Community post',
-      initialValue: widget.post.body,
-      maxLength: 5000,
-    );
-    if (editedBody == null ||
-        editedBody == widget.post.body.trim() ||
-        !mounted) {
-      return;
-    }
+    if (_isEditingPost || !mounted) return;
+
+    // Capture the exact text/version that the Student started editing. A
+    // Realtime refresh must not silently turn an old draft into a newer write.
+    final postId = widget.post.id;
+    final initialBody = widget.post.body;
+    final expectedVersion = widget.post.version;
+    setState(() => _isEditingPost = true);
+
     try {
-      await widget.controller.updatePost(
-        postId: widget.post.id,
-        body: editedBody,
+      final updated = await _requestEditedText(
+        title: 'Edit Community post',
+        initialValue: initialBody,
+        maxLength: 5000,
+        failureMessage: 'The post could not be edited.',
+        onSave: (body) => widget.controller.updatePost(
+          postId: postId,
+          expectedVersion: expectedVersion,
+          body: body,
+        ),
       );
+      if (updated == true && mounted) _showMessage(context, 'Post updated.');
     } catch (error) {
-      if (mounted) _showMessage(context, error.toString());
+      if (mounted) {
+        _showMessage(
+          context,
+          _friendlyActionError(
+            error,
+            fallback: 'The post could not be edited.',
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isEditingPost = false);
     }
   }
 
@@ -435,87 +454,71 @@ class _PostCardState extends State<_PostCard> {
 
   // Lets an owner revise comment text with backend version protection.
   Future<void> _editOwnComment(CommunityComment comment) async {
-    final editedBody = await _requestEditedText(
-      title: 'Edit comment',
-      initialValue: comment.body,
-      maxLength: 2000,
-    );
-    if (editedBody == null || editedBody == comment.body.trim() || !mounted) {
-      return;
-    }
+    if (_editingCommentIds.contains(comment.id) || !mounted) return;
+
+    // Keep optimistic concurrency tied to the text visible when Edit opened.
+    final commentId = comment.id;
+    final initialBody = comment.body;
+    final expectedVersion = comment.version;
+    final postId = widget.post.id;
+    setState(() => _editingCommentIds.add(commentId));
+
     try {
-      await widget.controller.updateComment(
-        comment.id,
-        body: editedBody,
-        postId: widget.post.id,
+      final updated = await _requestEditedText(
+        title: 'Edit comment',
+        initialValue: initialBody,
+        maxLength: 2000,
+        failureMessage: 'The comment could not be edited.',
+        onSave: (body) => widget.controller.updateComment(
+          commentId,
+          body: body,
+          postId: postId,
+          expectedVersion: expectedVersion,
+        ),
       );
+      if (updated == true && mounted) {
+        _showMessage(context, 'Comment updated.');
+      }
     } catch (error) {
-      if (mounted) _showMessage(context, error.toString());
+      if (mounted) {
+        _showMessage(
+          context,
+          _friendlyActionError(
+            error,
+            fallback: 'The comment could not be edited.',
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _editingCommentIds.remove(commentId));
+      }
     }
   }
 
   // Uses a keyboard-safe sheet so a multi-line editor is not squeezed in a dialog.
-  Future<String?> _requestEditedText({
+  Future<bool?> _requestEditedText({
     required String title,
     required String initialValue,
     required int maxLength,
+    required String failureMessage,
+    required Future<void> Function(String body) onSave,
   }) async {
-    final controller = TextEditingController(text: initialValue);
-    final result = await showModalBottomSheet<String>(
+    if (!mounted) return null;
+    return showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      builder: (sheetContext) => SingleChildScrollView(
-        padding: EdgeInsets.fromLTRB(
-          16,
-          16,
-          16,
-          16 + MediaQuery.viewInsetsOf(sheetContext).bottom,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(title, style: Theme.of(sheetContext).textTheme.titleLarge),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              maxLength: maxLength,
-              minLines: 3,
-              maxLines: 6,
-              decoration: const InputDecoration(
-                labelText: 'Text',
-                alignLabelWithHint: true,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => Navigator.pop(sheetContext),
-                    child: const Text('Cancel'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: () {
-                      final text = controller.text.trim();
-                      if (text.isNotEmpty) Navigator.pop(sheetContext, text);
-                    },
-                    child: const Text('Save'),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
+      isDismissible: false,
+      enableDrag: false,
+      builder: (sheetContext) => CommunityEditTextSheet(
+        title: title,
+        initialValue: initialValue,
+        maxLength: maxLength,
+        failureMessage: failureMessage,
+        onSave: onSave,
       ),
     );
-    controller.dispose();
-    return result;
   }
 
   @override
@@ -582,9 +585,10 @@ class _PostCardState extends State<_PostCard> {
                   },
                   itemBuilder: (context) => [
                     if (isMine)
-                      const PopupMenuItem(
+                      PopupMenuItem(
                         value: 'edit',
-                        child: Text('Edit my post'),
+                        enabled: !_isEditingPost,
+                        child: const Text('Edit my post'),
                       ),
                     if (isMine)
                       const PopupMenuItem(
@@ -650,12 +654,15 @@ class _PostCardState extends State<_PostCard> {
                                 _removeOwnComment(comment);
                               }
                             },
-                            itemBuilder: (context) => const [
+                            itemBuilder: (context) => [
                               PopupMenuItem(
                                 value: 'edit',
-                                child: Text('Edit my comment'),
+                                enabled: !_editingCommentIds.contains(
+                                  comment.id,
+                                ),
+                                child: const Text('Edit my comment'),
                               ),
-                              PopupMenuItem(
+                              const PopupMenuItem(
                                 value: 'remove',
                                 child: Text('Remove my comment'),
                               ),
@@ -754,6 +761,165 @@ class _PostCardState extends State<_PostCard> {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// This sheet owns its controller until Flutter removes the route after the
+// closing animation. Disposing a caller-owned controller immediately after
+// Navigator.pop can otherwise make the still-animating TextField crash.
+class CommunityEditTextSheet extends StatefulWidget {
+  const CommunityEditTextSheet({
+    required this.title,
+    required this.initialValue,
+    required this.maxLength,
+    required this.failureMessage,
+    required this.onSave,
+    super.key,
+  });
+
+  final String title;
+  final String initialValue;
+  final int maxLength;
+  final String failureMessage;
+  final Future<void> Function(String body) onSave;
+
+  @override
+  State<CommunityEditTextSheet> createState() => _CommunityEditTextSheetState();
+}
+
+class _CommunityEditTextSheetState extends State<CommunityEditTextSheet> {
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+  late final TextEditingController _controller;
+  bool _isSaving = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_isSaving) return;
+    FocusScope.of(context).unfocus();
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    final body = _controller.text.trim();
+    if (body == widget.initialValue.trim()) {
+      Navigator.pop(context, false);
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      await widget.onSave(body);
+      if (mounted) Navigator.pop(context, true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _errorMessage = _friendlyActionError(
+          error,
+          fallback: widget.failureMessage,
+        );
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: !_isSaving,
+      child: SingleChildScrollView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: EdgeInsets.fromLTRB(
+          16,
+          16,
+          16,
+          16 + MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text(widget.title, style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _controller,
+                autofocus: true,
+                enabled: !_isSaving,
+                maxLength: widget.maxLength,
+                minLines: 3,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  labelText: 'Text',
+                  alignLabelWithHint: true,
+                ),
+                validator: (value) {
+                  final text = value?.trim() ?? '';
+                  if (text.isEmpty) return 'Write some text before saving.';
+                  if (text.runes.length > widget.maxLength) {
+                    return 'Use ${widget.maxLength} characters or fewer.';
+                  }
+                  return null;
+                },
+              ),
+              if (_errorMessage != null) ...<Widget>[
+                const SizedBox(height: 8),
+                Semantics(
+                  liveRegion: true,
+                  child: Text(
+                    _errorMessage!,
+                    key: const ValueKey<String>('community-edit-error'),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 10),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _isSaving
+                          ? null
+                          : () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: const ValueKey<String>('community-edit-save'),
+                      onPressed: _isSaving ? null : _save,
+                      child: _isSaving
+                          ? const SizedBox.square(
+                              key: ValueKey<String>('community-edit-loading'),
+                              dimension: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Save'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1563,4 +1729,11 @@ void _showMessage(BuildContext context, String message) {
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(SnackBar(content: Text(message)));
+}
+
+// Convert every edit failure into reviewed text suitable for an inline error.
+String _friendlyActionError(Object error, {required String fallback}) {
+  if (error is BackendException) return error.message;
+  if (error is StateError) return error.message;
+  return '$fallback Check your connection and retry.';
 }

@@ -413,14 +413,14 @@ class CommunityRepository {
   }
 
   // Edit an owned post only at the version shown on screen.
-  Future<void> updatePost({
+  Future<Map<Object?, Object?>> updatePost({
     required String subjectId,
     required String postId,
     required int expectedVersion,
     required String body,
   }) async {
     // PostgreSQL rejects stale versions and non-owners.
-    await backend.editPost(
+    return backend.editPost(
       subjectId: subjectId,
       postId: postId,
       expectedVersion: expectedVersion,
@@ -459,16 +459,14 @@ class CommunityRepository {
   }
 
   // Edit an owned comment at one exact version.
-  Future<void> updateComment({
-    required String subjectId,
+  Future<Map<Object?, Object?>> updateComment({
     required String postId,
     required String commentId,
     required int expectedVersion,
     required String body,
   }) async {
     // The backend owns authorization and concurrency validation.
-    await backend.editComment(
-      subjectId: subjectId,
+    return backend.editComment(
       postId: postId,
       commentId: commentId,
       expectedVersion: expectedVersion,
@@ -546,8 +544,21 @@ class CommunityController {
   // Number of posts requested by the current paginated feed.
   int _requestedPostCount = defaultCommunityPostLimit;
 
-  // Prevent overlapping feed queries from racing each other.
-  bool _isRefreshing = false;
+  // Refresh serials coalesce overlap without letting later Realtime events
+  // indefinitely extend the Future awaited by an already-saved edit.
+  Future<void>? _activeRefresh;
+  int? _activeRefreshGeneration;
+  int? _activeRefreshMutationGeneration;
+  int _requestedRefreshSerial = 0;
+  int _completedRefreshSerial = 0;
+
+  // Each Subject watch owns a generation. Late rows from an older Subject are
+  // discarded before they can be published under the newly selected Subject.
+  int _watchGeneration = 0;
+
+  // Queries also capture the local mutation generation. A snapshot fetched
+  // before an edit can never overwrite the RPC's newer confirmed version.
+  int _mutationGeneration = 0;
 
   // This flag stops late asynchronous work after the page is removed.
   bool _isDisposed = false;
@@ -557,11 +568,14 @@ class CommunityController {
     // A disposed page must never open a new realtime subscription.
     if (_isDisposed) return;
 
+    // Invalidate every older in-flight query/subscription attempt immediately.
+    final watchGeneration = ++_watchGeneration;
+
     // Stop the previous Subject subscription before changing labels or data.
     await _removeRealtimeChannel();
 
     // Leaving during cleanup means no new Subject work should begin.
-    if (_isDisposed) return;
+    if (_isDisposed || watchGeneration != _watchGeneration) return;
 
     // Save the selected Subject for later edits, comments, and reports.
     _activeSubject = subject;
@@ -587,8 +601,8 @@ class CommunityController {
           .eq('subject_id', subject.id)
           .maybeSingle();
 
-      // The student may have left while the database query was running.
-      if (_isDisposed) return;
+      // The Student may have left or opened another Subject during the query.
+      if (_isDisposed || watchGeneration != _watchGeneration) return;
 
       // Missing Community means the catalog invariant was broken server-side.
       if (communityRow == null) {
@@ -605,14 +619,17 @@ class CommunityController {
       state = state.copyWith(activeCommunityId: communityId);
 
       // Load posts and comments from Supabase before claiming the feed is live.
-      await _loadFeed();
+      await _loadFeed(ensureFresh: true);
 
-      // Do not subscribe when the owning page closed during the first load.
-      if (_isDisposed) return;
+      // Do not subscribe when this page/Subject changed during the first load.
+      if (_isDisposed || watchGeneration != _watchGeneration) return;
 
       // Subscribe after the first successful load to avoid a duplicate query.
-      _listenForDatabaseChanges(communityId);
+      _listenForDatabaseChanges(communityId, watchGeneration);
     } catch (error) {
+      // An older Subject request must never replace the active Subject state.
+      if (_isDisposed || watchGeneration != _watchGeneration) return;
+
       // A failed network or RLS check becomes a clear retryable screen state.
       state = state.copyWith(
         posts: const <CommunityPost>[],
@@ -627,8 +644,15 @@ class CommunityController {
 
   // Stop live work when leaving a Subject or signing out.
   Future<void> stopWatchingCommunity() async {
+    // Invalidate in-flight reads before awaiting channel cleanup.
+    final stopGeneration = ++_watchGeneration;
+
     // Cancel callbacks before clearing the selected Subject.
     await _removeRealtimeChannel();
+
+    // A newer watch now owns the controller and must not be cleared by this
+    // older stop request finishing late.
+    if (_isDisposed || stopGeneration != _watchGeneration) return;
 
     // Forget the old Subject so stale writes fail safely.
     _activeSubject = null;
@@ -651,7 +675,7 @@ class CommunityController {
     state = state.copyWith(isLoadingMore: true, clearError: true);
 
     // Reload the bounded canonical window.
-    await _loadFeed();
+    await _loadFeed(ensureFresh: true);
   }
 
   // Add a new Student post to the active Subject.
@@ -680,20 +704,39 @@ class CommunityController {
   // Edit the currently signed-in Student's own post.
   Future<void> updatePost({
     required String postId,
+    required int expectedVersion,
     required String body,
   }) async {
-    // Find the loaded version before sending the protected update.
+    // Confirm the post is still loaded, but preserve the version captured when
+    // the editor opened instead of silently overwriting a Realtime update.
     final post = _findPost(postId);
+    if (expectedVersion < 1) {
+      throw StateError('The post version is invalid. Reopen Edit and retry.');
+    }
+    if (post.version != expectedVersion) {
+      throw StateError(
+        'This post changed while you were editing. '
+        'Close and reopen Edit to review the latest version.',
+      );
+    }
 
     // Execute and then reload the canonical database row.
-    await _runWrite(() async {
-      await _repository.updatePost(
-        subjectId: _requireSubject().id,
-        postId: post.id,
-        expectedVersion: post.version,
-        body: _requiredText(body, 'Post'),
-      );
-    });
+    try {
+      await _runWrite(() async {
+        final result = await _repository.updatePost(
+          subjectId: _requireSubject().id,
+          postId: post.id,
+          expectedVersion: expectedVersion,
+          body: _requiredText(body, 'Post'),
+        );
+        _applyEditedPost(result);
+      });
+    } catch (_) {
+      // A server-side conflict/removal should also update the feed behind the
+      // still-open editor. The original friendly edit error is then rethrown.
+      await _loadFeed(ensureFresh: true);
+      rethrow;
+    }
   }
 
   // Soft-delete the signed-in Student's own post.
@@ -737,27 +780,44 @@ class CommunityController {
   }
 
   // Reload the visible canonical feed after one or more attachment uploads.
-  Future<void> refresh() => _loadFeed();
+  Future<void> refresh() => _loadFeed(ensureFresh: true);
 
   // Edit an owned loaded comment.
   Future<void> updateComment(
     String commentId, {
     required String body,
     String? postId,
+    required int expectedVersion,
   }) async {
     // Locate both parent and exact concurrency version.
     final located = _findComment(commentId, preferredPostId: postId);
+    if (expectedVersion < 1) {
+      throw StateError(
+        'The comment version is invalid. Reopen Edit and retry.',
+      );
+    }
+    if (located.comment.version != expectedVersion) {
+      throw StateError(
+        'This comment changed while you were editing. '
+        'Close and reopen Edit to review the latest version.',
+      );
+    }
 
     // Let PostgreSQL enforce ownership and status.
-    await _runWrite(() async {
-      await _repository.updateComment(
-        subjectId: _requireSubject().id,
-        postId: located.post.id,
-        commentId: located.comment.id,
-        expectedVersion: located.comment.version,
-        body: _requiredText(body, 'Comment'),
-      );
-    });
+    try {
+      await _runWrite(() async {
+        final result = await _repository.updateComment(
+          postId: located.post.id,
+          commentId: located.comment.id,
+          expectedVersion: expectedVersion,
+          body: _requiredText(body, 'Comment'),
+        );
+        _applyEditedComment(result);
+      });
+    } catch (_) {
+      await _loadFeed(ensureFresh: true);
+      rethrow;
+    }
   }
 
   // Soft-delete an owned loaded comment.
@@ -798,20 +858,70 @@ class CommunityController {
   }
 
   // Load the requested post window and matching real comments.
-  Future<void> _loadFeed() async {
+  Future<void> _loadFeed({bool ensureFresh = false}) async {
     // Do not run or publish a query for a page that has already closed.
     if (_isDisposed) return;
 
-    // Avoid racing a Realtime callback with a manual refresh.
-    if (_isRefreshing) return;
-    _isRefreshing = true;
+    final watchGeneration = _watchGeneration;
+    final mutationGeneration = _mutationGeneration;
+    final requestSerial = ensureFresh || _activeRefresh == null
+        ? ++_requestedRefreshSerial
+        : _requestedRefreshSerial;
+
+    // A caller waits only for the snapshot that includes its own request.
+    // Realtime events arriving later receive a larger serial and cannot keep
+    // this edit/loading Future alive indefinitely.
+    while (!_isDisposed &&
+        watchGeneration == _watchGeneration &&
+        mutationGeneration == _mutationGeneration &&
+        _completedRefreshSerial < requestSerial) {
+      final inFlight = _activeRefresh;
+      if (inFlight != null &&
+          _activeRefreshGeneration == watchGeneration &&
+          _activeRefreshMutationGeneration == mutationGeneration) {
+        await inFlight;
+        continue;
+      }
+
+      final completedThrough = _requestedRefreshSerial;
+      final refresh = _loadFeedOnce(watchGeneration);
+      _activeRefresh = refresh;
+      _activeRefreshGeneration = watchGeneration;
+      _activeRefreshMutationGeneration = mutationGeneration;
+      try {
+        await refresh;
+      } finally {
+        if (identical(_activeRefresh, refresh)) {
+          _activeRefresh = null;
+          _activeRefreshGeneration = null;
+          _activeRefreshMutationGeneration = null;
+        }
+      }
+
+      // An old Subject's pass cannot satisfy a new Subject's request serial.
+      if (watchGeneration == _watchGeneration &&
+          mutationGeneration == _mutationGeneration &&
+          !_isDisposed) {
+        if (_completedRefreshSerial < completedThrough) {
+          _completedRefreshSerial = completedThrough;
+        }
+      }
+    }
+  }
+
+  // Perform one bounded canonical feed query. _loadFeed serializes callers.
+  Future<void> _loadFeedOnce(int watchGeneration) async {
+    if (_isDisposed) return;
+
+    // Bind every awaited query and final state publication to one Community.
+    final communityId = state.activeCommunityId;
+    final mutationGeneration = _mutationGeneration;
 
     try {
       // Resolve the authenticated database client.
       final client = _requireClient();
 
       // Read the canonical Community UUID selected by watchCommunity.
-      final communityId = state.activeCommunityId;
       if (communityId == null || communityId.isEmpty) {
         throw StateError('Choose a Subject Community first.');
       }
@@ -825,6 +935,10 @@ class CommunityController {
           .eq('is_removed', false)
           .order('created_at', ascending: false)
           .range(0, requestedRows - 1);
+
+      if (!_isCurrentFeed(watchGeneration, communityId, mutationGeneration)) {
+        return;
+      }
 
       // Convert PostgREST dynamic rows into normal string-keyed maps.
       final postRows = _mapList(rawPosts);
@@ -853,6 +967,10 @@ class CommunityController {
             .order('created_at')
             .limit(commentLimit);
 
+        if (!_isCurrentFeed(watchGeneration, communityId, mutationGeneration)) {
+          return;
+        }
+
         // Save normal typed maps for the attachment query and model builder.
         visibleCommentRows.addAll(_mapList(rawComments));
       }
@@ -875,6 +993,9 @@ class CommunityController {
             .inFilter('post_id', postIds)
             .eq('status', 'ready')
             .order('created_at');
+        if (!_isCurrentFeed(watchGeneration, communityId, mutationGeneration)) {
+          return;
+        }
         for (final row in _mapList(rawPostAttachments)) {
           final attachment = CommunityAttachment.fromSupabaseRow(row);
           final targetId = attachment.postId;
@@ -891,6 +1012,9 @@ class CommunityController {
             .inFilter('comment_id', commentIds)
             .eq('status', 'ready')
             .order('created_at');
+        if (!_isCurrentFeed(watchGeneration, communityId, mutationGeneration)) {
+          return;
+        }
         for (final row in _mapList(rawCommentAttachments)) {
           final attachment = CommunityAttachment.fromSupabaseRow(row);
           final targetId = attachment.commentId;
@@ -932,6 +1056,9 @@ class CommunityController {
       }
 
       // Publish a server-backed live state only after both queries succeed.
+      if (!_isCurrentFeed(watchGeneration, communityId, mutationGeneration)) {
+        return;
+      }
       state = state.copyWith(
         posts: posts,
         isLoading: false,
@@ -941,6 +1068,10 @@ class CommunityController {
         clearError: true,
       );
     } catch (error) {
+      if (!_isCurrentFeed(watchGeneration, communityId, mutationGeneration)) {
+        return;
+      }
+
       // Keep any already loaded rows visible but explain the refresh failure.
       state = state.copyWith(
         isLoading: false,
@@ -948,14 +1079,23 @@ class CommunityController {
         isLive: state.posts.isNotEmpty,
         errorMessage: _friendlyError(error),
       );
-    } finally {
-      // Future manual or Realtime refreshes may now run.
-      _isRefreshing = false;
     }
   }
 
+  // True only while this exact Subject still owns the visible feed.
+  bool _isCurrentFeed(
+    int watchGeneration,
+    String? communityId,
+    int mutationGeneration,
+  ) {
+    return !_isDisposed &&
+        watchGeneration == _watchGeneration &&
+        mutationGeneration == _mutationGeneration &&
+        state.activeCommunityId == communityId;
+  }
+
   // Subscribe to post and comment table changes for real-time refreshes.
-  void _listenForDatabaseChanges(String communityId) {
+  void _listenForDatabaseChanges(String communityId, int watchGeneration) {
     // Resolve the initialized client once for the channel builder.
     final client = _requireClient();
 
@@ -966,19 +1106,25 @@ class CommunityController {
           event: PostgresChangeEvent.all,
           schema: 'public',
           table: 'community_posts',
-          callback: (_) => _scheduleRefresh(),
+          callback: (_) {
+            if (watchGeneration == _watchGeneration) _scheduleRefresh();
+          },
         )
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
           table: 'community_comments',
-          callback: (_) => _scheduleRefresh(),
+          callback: (_) {
+            if (watchGeneration == _watchGeneration) _scheduleRefresh();
+          },
         )
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
           table: 'community_attachments',
-          callback: (_) => _scheduleRefresh(),
+          callback: (_) {
+            if (watchGeneration == _watchGeneration) _scheduleRefresh();
+          },
         )
         .subscribe();
   }
@@ -992,7 +1138,10 @@ class CommunityController {
     _refreshTimer?.cancel();
 
     // Wait briefly so a post and related counter update arrive together.
-    _refreshTimer = Timer(const Duration(milliseconds: 250), _loadFeed);
+    _refreshTimer = Timer(
+      const Duration(milliseconds: 250),
+      () => unawaited(_loadFeed(ensureFresh: true)),
+    );
   }
 
   // Run one write and then refresh the canonical server state.
@@ -1000,18 +1149,83 @@ class CommunityController {
     // Remove an old error before the new attempt starts.
     state = state.copyWith(clearError: true);
 
+    // Invalidate snapshots that began before this write attempt.
+    _mutationGeneration += 1;
+
     try {
       // Perform the protected mutation.
       await action();
 
+      // Invalidate snapshots that began while the mutation was in flight.
+      _mutationGeneration += 1;
+
       // Reload real server timestamps, versions, and comment counts.
-      await _loadFeed();
+      await _loadFeed(ensureFresh: true);
     } catch (error) {
+      // A failed/ambiguous request must also reject mid-request snapshots.
+      _mutationGeneration += 1;
+
       // Store the friendly message and rethrow for the screen snackbar.
       final message = _friendlyError(error);
       state = state.copyWith(errorMessage: message);
       throw StateError(message);
     }
+  }
+
+  // Publish the validated RPC row immediately. This keeps the edited text and
+  // version correct even if the follow-up feed request temporarily loses Wi-Fi.
+  void _applyEditedPost(Map<Object?, Object?> result) {
+    final postId = result['id']?.toString() ?? '';
+    final body = result['body'];
+    final version = result['version'];
+    if (postId.isEmpty || body is! String || version is! num) return;
+
+    // Do this before publishing v2 so a pending v1 snapshot is already stale.
+    _mutationGeneration += 1;
+
+    state = state.copyWith(
+      posts: <CommunityPost>[
+        for (final post in state.posts)
+          if (post.id == postId && post.version <= version.toInt())
+            post.copyWith(
+              body: body,
+              version: version.toInt(),
+              updatedAt: _nullableDate(result['updated_at']),
+            )
+          else
+            post,
+      ],
+    );
+  }
+
+  // Comments share the same immediate canonical update as Posts.
+  void _applyEditedComment(Map<Object?, Object?> result) {
+    final commentId = result['id']?.toString() ?? '';
+    final body = result['body'];
+    final version = result['version'];
+    if (commentId.isEmpty || body is! String || version is! num) return;
+
+    _mutationGeneration += 1;
+
+    state = state.copyWith(
+      posts: <CommunityPost>[
+        for (final post in state.posts)
+          post.copyWith(
+            comments: <CommunityComment>[
+              for (final comment in post.comments)
+                if (comment.id == commentId &&
+                    comment.version <= version.toInt())
+                  comment.copyWith(
+                    body: body,
+                    version: version.toInt(),
+                    updatedAt: _nullableDate(result['updated_at']),
+                  )
+                else
+                  comment,
+            ],
+          ),
+      ],
+    );
   }
 
   // Locate one currently loaded post.
@@ -1098,6 +1312,7 @@ class CommunityController {
   void dispose() {
     // Mark closed before any pending Future gets another chance to continue.
     _isDisposed = true;
+    _watchGeneration += 1;
 
     // Synchronous timer cleanup prevents a callback after disposal.
     _refreshTimer?.cancel();

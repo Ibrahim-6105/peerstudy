@@ -901,13 +901,44 @@ class BackendApiService {
     required String postId,
     required int expectedVersion,
     required String body,
-  }) {
-    // PostgreSQL verifies ownership and rejects a stale version atomically.
-    return _rpcMap('update_community_post', <String, Object?>{
-      'p_post_id': postId,
-      'p_expected_version': expectedVersion,
-      'p_body': body.trim(),
-    });
+  }) async {
+    final cleanSubjectId = _requiredUuidArgument(subjectId, 'Subject');
+    final cleanPostId = _requiredUuidArgument(postId, 'post');
+    final cleanBody = _requiredText(body, 'Post');
+    if (expectedVersion < 1) {
+      throw const BackendException(
+        'Reopen Edit before saving this post.',
+        code: 'invalid-argument',
+      );
+    }
+    if (cleanBody.runes.length > 5000) {
+      throw const BackendException(
+        'A post can contain at most 5000 characters.',
+        code: 'invalid-argument',
+      );
+    }
+
+    try {
+      // PostgreSQL verifies ownership and rejects a stale version atomically.
+      final result = await _rpcMap('update_community_post', <String, Object?>{
+        'p_post_id': cleanPostId,
+        'p_expected_version': expectedVersion,
+        'p_body': cleanBody,
+      });
+      _validateCommunityEditResult(
+        result,
+        targetName: 'post',
+        idKey: 'id',
+        expectedId: cleanPostId,
+        parentKey: 'community_id',
+        expectedParentId: cleanSubjectId,
+        expectedBody: cleanBody,
+        expectedVersion: expectedVersion + 1,
+      );
+      return result;
+    } on BackendException catch (error) {
+      throw _communityEditException(error, targetName: 'post');
+    }
   }
 
   // Soft-delete the current Student's own post.
@@ -950,18 +981,50 @@ class BackendApiService {
 
   // Edit the signed-in Student's own comment at one exact version.
   Future<Map<Object?, Object?>> editComment({
-    required String subjectId,
     required String postId,
     required String commentId,
     required int expectedVersion,
     required String body,
-  }) {
-    // The RPC performs ownership, active-account, and concurrency checks.
-    return _rpcMap('update_community_comment', <String, Object?>{
-      'p_comment_id': commentId,
-      'p_expected_version': expectedVersion,
-      'p_body': body.trim(),
-    });
+  }) async {
+    final cleanPostId = _requiredUuidArgument(postId, 'post');
+    final cleanCommentId = _requiredUuidArgument(commentId, 'comment');
+    final cleanBody = _requiredText(body, 'Comment');
+    if (expectedVersion < 1) {
+      throw const BackendException(
+        'Reopen Edit before saving this comment.',
+        code: 'invalid-argument',
+      );
+    }
+    if (cleanBody.runes.length > 2000) {
+      throw const BackendException(
+        'A comment can contain at most 2000 characters.',
+        code: 'invalid-argument',
+      );
+    }
+
+    try {
+      // The RPC performs ownership, active-account, and concurrency checks.
+      final result =
+          await _rpcMap('update_community_comment', <String, Object?>{
+            'p_comment_id': cleanCommentId,
+            'p_expected_version': expectedVersion,
+            'p_body': cleanBody,
+          });
+      _validateCommunityEditResult(
+        result,
+        targetName: 'comment',
+        idKey: 'id',
+        expectedId: cleanCommentId,
+        parentKey: 'post_id',
+        expectedParentId: cleanPostId,
+        expectedBody: cleanBody,
+        expectedVersion: expectedVersion + 1,
+      );
+
+      return result;
+    } on BackendException catch (error) {
+      throw _communityEditException(error, targetName: 'comment');
+    }
   }
 
   // Soft-delete one owned comment while retaining audit history.
@@ -2199,6 +2262,60 @@ BackendException _postgrestBackendException(PostgrestException error) {
 
   // Raise-exception RPC validation uses the reviewed database message.
   return BackendException(error.message, code: error.code ?? 'database-error');
+}
+
+// Give Community edit failures one stable, actionable message instead of a
+// raw PostgreSQL exception. The editor remains open so network errors can retry.
+BackendException _communityEditException(
+  BackendException error, {
+  required String targetName,
+}) {
+  return switch (error.code) {
+    '40001' => BackendException(
+      'This $targetName changed on another device. '
+      'Close and reopen Edit to review the latest version.',
+      code: 'version-conflict',
+    ),
+    'P0002' => BackendException(
+      'This $targetName no longer exists. Close the editor to refresh.',
+      code: 'not-found',
+    ),
+    '55000' => BackendException(
+      'This $targetName was removed and can no longer be edited.',
+      code: 'removed',
+    ),
+    _ => error,
+  };
+}
+
+// Verify that an edit RPC confirmed the exact row and next version requested.
+// A malformed or outdated backend response is never announced as a success.
+void _validateCommunityEditResult(
+  Map<Object?, Object?> result, {
+  required String targetName,
+  required String idKey,
+  required String expectedId,
+  required String parentKey,
+  required String expectedParentId,
+  required String expectedBody,
+  required int expectedVersion,
+}) {
+  final version = result['version'];
+  final valid =
+      result[idKey]?.toString() == expectedId &&
+      result[parentKey]?.toString() == expectedParentId &&
+      result['body']?.toString() == expectedBody &&
+      version is num &&
+      version.isFinite &&
+      version == expectedVersion &&
+      result['status']?.toString() == 'active' &&
+      result['is_removed'] == false;
+  if (!valid) {
+    throw BackendException(
+      'The server could not confirm the edited $targetName. Refresh and retry.',
+      code: 'invalid-response',
+    );
+  }
 }
 
 // Validate and trim required user text.
