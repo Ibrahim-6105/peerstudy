@@ -96,6 +96,33 @@ void main() {
     expect(parentLock, greaterThanOrEqualTo(0));
     expect(reportUpdate, greaterThan(parentLock));
   });
+
+  test('restricting a Student removes all of their Community content', () {
+    final migration = File(
+      'supabase/migrations/20260905000100_remove_restricted_user_content.sql',
+    );
+    expect(migration.existsSync(), isTrue);
+
+    final sql = migration.readAsStringSync().toLowerCase();
+    expect(
+      sql,
+      contains("if new.role = 'student' and new.status = 'restricted' then"),
+    );
+    expect(sql, contains('update public.community_comments'));
+    expect(sql, contains('update public.community_posts'));
+    expect(sql, contains("removal_reason = 'author account was restricted'"));
+    expect(sql, contains("and status = 'active'"));
+    expect(sql, contains('after update of status on public.profiles'));
+    expect(
+      sql,
+      contains(
+        'revoke execute on function public.remove_restricted_student_content()',
+      ),
+    );
+
+    // Existing restricted accounts must receive the same cleanup during deploy.
+    expect(RegExp(r"p[.]status = 'restricted'").allMatches(sql).length, 2);
+  });
 }
 
 class _DialogHarness extends StatefulWidget {
